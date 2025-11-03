@@ -26,6 +26,8 @@ impl Item {
     }
 }
 
+pub mod history;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,4 +45,3 @@ mod tests {
         assert!(t.len() <= 40);
     }
 }
-

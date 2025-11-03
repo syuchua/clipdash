@@ -6,13 +6,16 @@
 
 ## 快速开始
 
-1) 安装 Rust（rustup）
+1) Ubuntu 20.04 一键脚本（推荐）
+- `bash scripts/setup_ubuntu_20_04.sh`
+
+2) 手动安装 Rust（若不使用脚本）
 - 推荐：`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - 安装后执行：`source "$HOME/.cargo/env"`
 - 验证：`rustc --version && cargo --version && rustup --version`
 - 建议组件：`rustup component add clippy rustfmt`
 
-2) Linux 依赖（为后续 GUI/后端做准备，可稍后安装）
+3) Linux 依赖（为后续 GUI/后端做准备，可稍后安装）
 - Debian/Ubuntu：
   - 基础：`sudo apt update && sudo apt install -y build-essential pkg-config` 
   - SQLite（可选，若不使用 rusqlite bundled 特性）：`sudo apt install -y libsqlite3-dev`
@@ -23,7 +26,7 @@
 - Arch：
   - `sudo pacman -S --needed base-devel pkgconf sqlite gtk4 libadwaita libx11 libxfixes`
 
-3) 构建与测试（当前仅 skeleton）
+4) 构建与测试（当前仅 skeleton）
 - 拉取依赖并构建工作区：
   - `cd clipdash`
   - `cargo build`  （首次会下载工具链与依赖）
@@ -62,4 +65,3 @@ clipdash/
 
 ---
 更多细节请参见 `架构.md`。
-

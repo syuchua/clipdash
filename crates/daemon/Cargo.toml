@@ -1,0 +1,14 @@
+[package]
+name = "clipdash-daemon"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+clipdash-core = { path = "../core" }
+clipdash-store = { path = "../store" }
+clipdash-backend = { path = "../backend" }
+
+[[bin]]
+name = "clipdash-daemon"
+path = "src/main.rs"
+

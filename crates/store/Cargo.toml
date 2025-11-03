@@ -1,0 +1,8 @@
+[package]
+name = "clipdash-store"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+clipdash-core = { path = "../core" }
+

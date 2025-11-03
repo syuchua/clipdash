@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/store",
+    "crates/backend",
+    "crates/daemon",
+    "crates/ui",
+    "crates/cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+

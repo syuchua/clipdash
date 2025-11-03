@@ -1,0 +1,11 @@
+[package]
+name = "clipdash-ui"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+
+[[bin]]
+name = "clipdash-ui"
+path = "src/main.rs"
+

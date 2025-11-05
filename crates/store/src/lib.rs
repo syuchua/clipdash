@@ -1,4 +1,4 @@
-use clipdash-core::{Item, ItemKind};
+use clipdash_core::{Item, ItemKind};
 
 #[derive(Default)]
 pub struct Store {

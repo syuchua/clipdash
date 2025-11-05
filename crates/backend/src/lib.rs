@@ -1,4 +1,4 @@
-use clipdash-core::{Item, ItemKind};
+use clipdash_core::{Item, ItemKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipKind {
@@ -33,4 +33,3 @@ mod tests {
         assert!(b.read_current().is_none());
     }
 }
-

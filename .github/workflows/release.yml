@@ -29,6 +29,13 @@ jobs:
         run: |
           cargo build --release -p clipdash-daemon -p clipdash-cli
           cargo build --release -p clipdash-ui --features gtk-ui
+      - name: cargo-deb packages (x86_64 gnu)
+        run: |
+          cargo install cargo-deb --version ^1.42 || true
+          cargo deb -p clipdash-cli --no-strip --no-build
+          cargo deb -p clipdash-daemon --no-strip --no-build
+          cargo deb -p clipdash-ui --no-strip --no-build --features gtk-ui
+          mkdir -p dist && cp -v target/debian/*.deb dist/
       - name: Package tarball
         run: |
           bash scripts/package_release.sh linux-x86_64-gnu
@@ -36,11 +43,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: clipdash-${{ github.ref_name }}-linux-x86_64-gnu
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/*.tar.gz
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

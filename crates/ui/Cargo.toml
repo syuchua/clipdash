@@ -2,6 +2,7 @@
 name = "clipdash-ui"
 version = "0.0.1"
 edition = "2021"
+description = "Clipdash GTK UI"
 
 [features]
 default = []
@@ -19,3 +20,12 @@ webkit2gtk = { version = "0.16", optional = true }
 [[bin]]
 name = "clipdash-ui"
 path = "src/main.rs"
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+depends = ["libgtk-3-0 (>= 3.22)"]
+assets = [
+    ["target/release/clipdash-ui", "/usr/bin/clipdash-ui", "755"],
+    ["../../packaging/clipdash-menu-gtk.desktop", "/usr/share/applications/clipdash-menu-gtk.desktop", "644"],
+]

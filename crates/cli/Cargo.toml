@@ -2,6 +2,15 @@
 name = "clipdash-cli"
 version = "0.0.1"
 edition = "2021"
+description = "Clipdash CLI: control daemon, list/get/copy clipboard entries, menu UI trigger"
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/clipdash", "/usr/bin/clipdash", "755"],
+    ["../../packaging/clipdash-menu.desktop", "/usr/share/applications/clipdash-menu.desktop", "644"],
+]
 
 [dependencies]
 clipdash-daemon = { path = "../daemon" }

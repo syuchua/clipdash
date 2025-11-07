@@ -2,6 +2,15 @@
 name = "clipdash-daemon"
 version = "0.0.1"
 edition = "2021"
+description = "Clipdash daemon: clipboard watcher and IPC server"
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/clipdash-daemon", "/usr/bin/clipdash-daemon", "755"],
+    ["../../packaging/clipdashd.service", "/usr/lib/systemd/user/clipdashd.service", "644"],
+]
 
 [dependencies]
 clipdash-core = { path = "../core" }

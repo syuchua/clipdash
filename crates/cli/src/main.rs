@@ -14,7 +14,7 @@ fn send(cmd: &str) -> std::io::Result<String> {
 }
 
 fn usage() {
-    eprintln!("clipdash CLI\nCommands:\n  daemon (run daemon)\n  add-text <text>\n  list [limit]\n  get <id>\n  pin <id> <0|1>\n  delete <id>\n  clear");
+    eprintln!("clipdash CLI\nCommands:\n  daemon (run daemon)\n  add-text <text>\n  list [limit] [query]\n  get <id>\n  paste <id> (print raw text)\n  pin <id> <0|1>\n  delete <id>\n  clear");
 }
 
 fn main() {
@@ -31,11 +31,22 @@ fn main() {
         }
         "list" => {
             let limit = args.next().unwrap_or("50".into());
-            match send(&format!("LIST {}", limit)) { Ok(r) => print!("{}", r), Err(e) => eprintln!("{}", e) }
+            let query = args.collect::<Vec<_>>().join(" ");
+            let cmd = if query.is_empty() { format!("LIST {}", limit) } else { format!("LIST {} {}", limit, query) };
+            match send(&cmd) { Ok(r) => print!("{}", r), Err(e) => eprintln!("{}", e) }
         }
         "get" => {
             let Some(id)= args.next() else { usage(); return; };
             match send(&format!("GET {}", id)) { Ok(r) => print!("{}", r), Err(e) => eprintln!("{}", e) }
+        }
+        "paste" => {
+            let Some(id)= args.next() else { usage(); return; };
+            match send(&format!("GET {}", id)) {
+                Ok(r) => {
+                    if let Some(rest) = r.strip_prefix("TEXT\n") { print!("{}", rest); } else { eprintln!("ERR unsupported kind or not found"); }
+                }
+                Err(e) => eprintln!("{}", e)
+            }
         }
         "pin" => {
             let Some(id)= args.next() else { usage(); return; };

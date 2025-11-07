@@ -47,14 +47,21 @@ impl State {
             "LIST" => {
                 let lim_s = parts.next().unwrap_or("50");
                 let limit: usize = lim_s.parse().unwrap_or(50);
-                // optional query not implemented yet
+                let query = parts.next().unwrap_or("");
+                let q = query.to_lowercase();
                 let items = self.history.all();
                 let mut out = String::new();
-                let count = items.len().min(limit);
-                let _ = write!(&mut out, "OK {}\n", count);
-                for it in items.iter().rev().take(limit) { // recent last -> show most recent first
-                    let kind = match it.kind { ItemKind::Text => "Text", ItemKind::Image => "Image", ItemKind::Html => "Html" };
-                    let _ = write!(&mut out, "{}\t{}\t{}\t{}\n", it.id, kind, if it.pinned {1}else{0}, it.title());
+                let mut rows = Vec::new();
+                for it in items.iter().rev() { // most recent first
+                    if q.is_empty() || matches_query(it, &q) {
+                        rows.push((it.id, &it.kind, it.pinned, it.title()));
+                        if rows.len() == limit { break; }
+                    }
+                }
+                let _ = write!(&mut out, "OK {}\n", rows.len());
+                for (id, kind, pinned, title) in rows {
+                    let k = match kind { ItemKind::Text => "Text", ItemKind::Image => "Image", ItemKind::Html => "Html" };
+                    let _ = write!(&mut out, "{}\t{}\t{}\t{}\n", id, k, if pinned {1}else{0}, title);
                 }
                 out
             }
@@ -127,6 +134,16 @@ pub fn run_server_forever() {
             }
             Err(e) => eprintln!("conn error: {}", e),
         }
+    }
+}
+
+fn matches_query(it: &Item, q: &str) -> bool {
+    match it.kind {
+        ItemKind::Text => {
+            let s = String::from_utf8_lossy(&it.data).to_lowercase();
+            s.contains(q)
+        }
+        _ => it.title().to_lowercase().contains(q),
     }
 }
 

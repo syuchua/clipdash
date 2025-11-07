@@ -1,4 +1,3 @@
 fn main() {
-    println!("clipdashd: daemon skeleton running");
+    clipdash_daemon::run_server_forever();
 }
-

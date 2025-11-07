@@ -12,6 +12,9 @@ dependencies = [
 [[package]]
 name = "clipdash-cli"
 version = "0.0.1"
+dependencies = [
+ "clipdash-daemon",
+]
 
 [[package]]
 name = "clipdash-core"

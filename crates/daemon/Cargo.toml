@@ -8,7 +8,9 @@ clipdash-core = { path = "../core" }
 clipdash-store = { path = "../store" }
 clipdash-backend = { path = "../backend" }
 
+[dev-dependencies]
+
+
 [[bin]]
 name = "clipdash-daemon"
 path = "src/main.rs"
-

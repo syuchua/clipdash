@@ -4,8 +4,8 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
+clipdash-daemon = { path = "../daemon" }
 
 [[bin]]
 name = "clipdash"
 path = "src/main.rs"
-

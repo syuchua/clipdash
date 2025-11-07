@@ -76,4 +76,12 @@ impl History {
     pub fn pin(&mut self, id: u64, pinned: bool) {
         if let Some(it) = self.items.iter_mut().find(|it| it.id == id) { it.pinned = pinned; }
     }
+
+    pub fn delete(&mut self, id: u64) -> bool {
+        let before = self.items.len();
+        self.items.retain(|i| i.id != id);
+        self.items.len() < before
+    }
+
+    pub fn clear(&mut self) { self.items.clear(); }
 }

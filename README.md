@@ -143,6 +143,12 @@ ui.max_image_preview_bytes = 10000000
 
 ## 桌面环境兼容性与建议
 
+支持矩阵（建议）
+- 预编译 GNU 二进制（x86_64）：Ubuntu 20.04/22.04/24.04、Debian 11/12（glibc ≥ 2.31）。更老系统建议自行编译
+- 预编译 GNU 二进制（aarch64）：Ubuntu 22.04/24.04（glibc ≥ 2.35）。如需 20.04 支持请本地构建或我们后续提供旧基线构建
+- 预编译 MUSL（x86_64/aarch64）：仅 CLI/Daemon，基本可在大多数较新内核的发行版运行
+- UI 运行时要求：GTK3（≥ 3.22），大多数 GNOME/KDE/Xfce 均满足
+
 通用
 - 剪贴板后端：Wayland 优先使用 `wl-clipboard`（`wl-copy/wl-paste`），X11 回退 `xclip`
 - 伪亚克力：纯 CSS 半透明与阴影，所有常见 DE 基本兼容

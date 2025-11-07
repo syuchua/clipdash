@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
@@ -33,7 +33,7 @@ jobs:
         run: cargo test --workspace --all-features -- --nocapture
 
   build-ui-gtk3:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install GTK3 dev
@@ -61,31 +61,5 @@ jobs:
             target/release/clipdash-daemon
             target/release/clipdash-ui
 
-  build-ui-gtk3-arm64:
-    runs-on: ubuntu-22.04-arm64
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install GTK3 dev
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
-      - name: Install toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ui-arm64-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build CLI/Daemon + UI (gtk-ui)
-        run: |
-          cargo build --release -p clipdash-daemon -p clipdash-cli
-          cargo build --release -p clipdash-ui --features gtk-ui
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-aarch64-gnu-binaries
-          path: |
-            target/release/clipdash
-            target/release/clipdash-daemon
-            target/release/clipdash-ui
+  # NOTE: ARM64 UI builds require an ARM64 runner or cross-compiled GTK sysroot.
+  # We skip ARM64 UI in CI to avoid waiting for unavailable runners.

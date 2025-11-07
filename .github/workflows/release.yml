@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   linux-x86_64-gnu:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install GTK3 dev
@@ -45,7 +45,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   linux-x86_64-musl:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
@@ -79,14 +79,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  linux-aarch64-gnu:
-    runs-on: ubuntu-22.04-arm64
+  linux-aarch64-gnu-cli:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install GTK3 dev
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      - name: Install aarch64 cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -95,13 +97,12 @@ jobs:
             ~/.cargo/git
             target
           key: rel-linux-arm64-gnu-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build release (ARM64 gnu)
+      - name: Build release (ARM64 gnu, CLI/Daemon only)
         run: |
-          cargo build --release -p clipdash-daemon -p clipdash-cli
-          cargo build --release -p clipdash-ui --features gtk-ui
+          cargo build --release -p clipdash-daemon -p clipdash-cli --target aarch64-unknown-linux-gnu
       - name: Package tarball
         run: |
-          bash scripts/package_release.sh linux-aarch64-gnu
+          bash scripts/package_release.sh linux-aarch64-gnu aarch64-unknown-linux-gnu
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -114,37 +115,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  linux-aarch64-musl:
-    runs-on: ubuntu-22.04-arm64
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-musl
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rel-linux-arm64-musl-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build static (CLI/Daemon)
-        run: |
-          sudo apt-get update && sudo apt-get install -y musl-tools
-          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -p clipdash-daemon -p clipdash-cli --target aarch64-unknown-linux-musl
-      - name: Package tarball
-        run: |
-          bash scripts/package_release.sh linux-aarch64-musl aarch64-unknown-linux-musl
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: clipdash-${{ github.ref_name }}-linux-aarch64-musl
-          path: dist/*.tar.gz
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: dist/*.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # NOTE: aarch64 MUSL cross builds require zig/cross or extra toolchains; consider enabling later.
+  # linux-aarch64-musl job disabled for now to avoid unavailable runner/toolchain issues.

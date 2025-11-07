@@ -281,13 +281,30 @@ fn write_clipboard_text(text: &str) -> std::io::Result<()> {
     Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no clipboard tool (wl-copy/xclip)"))
 }
 
+fn looks_like_html(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() { return false; }
+    let lower = t.to_lowercase();
+    if lower.starts_with("<!doctype html") { return true; }
+    for key in ["<html", "<body", "<head", "<div", "<span", "<p", "<br", "</"] {
+        if lower.contains(key) { return true; }
+    }
+    if let Some(idx) = t.find('<') {
+        let rest = &t[idx+1..];
+        if let Some(c) = rest.chars().next() {
+            if c.is_ascii_alphabetic() && rest.contains('>') { return true; }
+        }
+    }
+    false
+}
+
 fn read_clipboard_html() -> Option<String> {
     // Try Wayland first
     if have_cmd("wl-paste") {
         if let Ok(out) = std::process::Command::new("wl-paste").args(["--no-newline","--type","text/html"]).output() {
             if out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout).to_string();
-                if !s.is_empty() { return Some(s); }
+                if !s.is_empty() && looks_like_html(&s) { return Some(s); }
             }
         }
     }
@@ -297,11 +314,31 @@ fn read_clipboard_html() -> Option<String> {
             if out.status.success() {
                 let mut s = String::from_utf8_lossy(&out.stdout).to_string();
                 if s.ends_with('\n') { s.pop(); }
-                if !s.is_empty() { return Some(s); }
+                if !s.is_empty() && looks_like_html(&s) { return Some(s); }
             }
         }
     }
     None
+}
+
+fn is_valid_image_bytes(mime: &str, b: &[u8]) -> bool {
+    if b.len() < 12 { return false; }
+    match mime {
+        m if m.contains("png") => {
+            // PNG signature: 89 50 4E 47 0D 0A 1A 0A
+            let sig = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            b.starts_with(&sig)
+        }
+        m if m.contains("jpeg") || m.contains("jpg") => {
+            // JPEG starts with FF D8 FF
+            b.len() >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF
+        }
+        m if m.contains("webp") => {
+            // WebP: RIFF....WEBP
+            b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP"
+        }
+        _ => false,
+    }
 }
 
 fn read_clipboard_image() -> Option<(Vec<u8>, String)> {
@@ -310,14 +347,18 @@ fn read_clipboard_image() -> Option<(Vec<u8>, String)> {
     if have_cmd("wl-paste") {
         for &m in MIMES {
             if let Ok(out) = std::process::Command::new("wl-paste").args(["--type", m]).output() {
-                if out.status.success() && !out.stdout.is_empty() { return Some((out.stdout, m.to_string())); }
+                if out.status.success() && !out.stdout.is_empty() {
+                    if is_valid_image_bytes(m, &out.stdout) { return Some((out.stdout, m.to_string())); }
+                }
             }
         }
     }
     if have_cmd("xclip") {
         for &m in MIMES {
             if let Ok(out) = std::process::Command::new("xclip").args(["-selection","clipboard","-o","-t", m]).output() {
-                if out.status.success() && !out.stdout.is_empty() { return Some((out.stdout, m.to_string())); }
+                if out.status.success() && !out.stdout.is_empty() {
+                    if is_valid_image_bytes(m, &out.stdout) { return Some((out.stdout, m.to_string())); }
+                }
             }
         }
     }

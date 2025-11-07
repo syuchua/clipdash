@@ -32,10 +32,10 @@ fn send(cmd: &str) -> std::io::Result<String> {
 }
 
 #[cfg(feature = "gtk-ui")]
-struct UiConfig { dark: bool, opacity: f64, max_preview_chars: usize }
+struct UiConfig { dark: bool, opacity: f64, max_preview_chars: usize, max_image_preview_bytes: usize }
 
 fn load_ui_config() -> UiConfig {
-    let mut cfg = UiConfig { dark: true, opacity: 0.93, max_preview_chars: 200_000 };
+    let mut cfg = UiConfig { dark: true, opacity: 1.0, max_preview_chars: 200_000, max_image_preview_bytes: 10_000_000 };
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let path = std::path::Path::new(&home).join(".config/clipdash/config.toml");
     if let Ok(s) = std::fs::read_to_string(path) {
@@ -51,6 +51,8 @@ fn load_ui_config() -> UiConfig {
                 if let Ok(f) = v.trim_matches('"').parse::<f64>() { cfg.opacity = f.clamp(0.0, 1.0); }
             } else if k.eq_ignore_ascii_case("ui.max_preview_chars") {
                 if let Ok(n) = v.trim_matches('"').parse::<usize>() { cfg.max_preview_chars = n.max(10_000).min(2_000_000); }
+            } else if k.eq_ignore_ascii_case("ui.max_image_preview_bytes") {
+                if let Ok(n) = v.trim_matches('"').parse::<usize>() { cfg.max_image_preview_bytes = n.max(200_000).min(50_000_000); }
             }
         }
     }
@@ -117,7 +119,8 @@ pub fn run() -> Result<(), String> {
     image_scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
     image_scroller.add(&preview_image);
     let preview_stack = gtk::Stack::new();
-    preview_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    // 禁用复杂过渡动画，减少合成器负担
+    preview_stack.set_transition_type(gtk::StackTransitionType::None);
     preview_stack.add_named(&preview_text, "text");
     preview_stack.add_named(&image_scroller, "image");
     preview_stack.set_visible_child_name("text");
@@ -134,6 +137,7 @@ pub fn run() -> Result<(), String> {
         Text(String),
         Html(String),
         Image { mime: String, bytes: Vec<u8> },
+        ImageTooLarge { mime: String, size: usize },
         Error(String),
     }
     let (txp, rxp) = glib::MainContext::channel::<(u64, PreviewMsg)>(glib::PRIORITY_DEFAULT);
@@ -305,15 +309,21 @@ pub fn run() -> Result<(), String> {
                     if let Some(buf) = preview_text_ui.buffer() { buf.set_text(&s); }
                     preview_stack_ui.set_visible_child_name("text");
                 }
+                PreviewMsg::ImageTooLarge { mime, size } => {
+                    if let Some(buf) = preview_text_ui.buffer() { buf.set_text(&format!("[image {} too large: {} bytes]", mime, size)); }
+                    preview_stack_ui.set_visible_child_name("text");
+                }
                 PreviewMsg::Image { mime: _mime, bytes } => {
                     let loader = PixbufLoader::new();
+                    // 尽量限制尺寸，避免过大分配
+                    let alloc = preview_stack_ui.allocation();
+                    let max_w = (alloc.width - 24).max(200);
+                    let max_h = 420;
+                    loader.set_size(max_w, max_h);
                     let _ = loader.write(&bytes);
                     let _ = loader.close();
                     if let Some(pix) = loader.pixbuf() {
                         *last_pix_ui.borrow_mut() = Some(pix.clone());
-                        let alloc = preview_stack_ui.allocation();
-                        let max_w = (alloc.width - 24).max(200);
-                        let max_h = 420;
                         let scaled = if *zoom_fit_ui.borrow() { scale_pixbuf_fit(&pix, max_w, max_h) } else { pix.clone() };
                         preview_image_ui.set_from_pixbuf(Some(&scaled));
                         preview_stack_ui.set_visible_child_name("image");
@@ -355,7 +365,11 @@ pub fn run() -> Result<(), String> {
                         let mime = lines.next().unwrap_or("image/png").to_string();
                         let b64 = lines.collect::<Vec<_>>().join("\n");
                         match B64.decode(b64) {
-                            Ok(bytes) => { let _ = txp_outer.send((my, PreviewMsg::Image { mime, bytes })); }
+                            Ok(bytes) => {
+                                let sz = bytes.len();
+                                if sz > ui_cfg.max_image_preview_bytes { let _ = txp_outer.send((my, PreviewMsg::ImageTooLarge { mime, size: sz })); }
+                                else { let _ = txp_outer.send((my, PreviewMsg::Image { mime, bytes })); }
+                            }
                             Err(e) => { let _ = txp_outer.send((my, PreviewMsg::Error(format!("base64: {}", e)))); }
                         }
                     } else {

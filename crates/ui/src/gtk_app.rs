@@ -32,10 +32,31 @@ fn send(cmd: &str) -> std::io::Result<String> {
 }
 
 #[cfg(feature = "gtk-ui")]
-struct UiConfig { dark: bool, opacity: f64, max_preview_chars: usize, max_image_preview_bytes: usize }
+#[derive(Clone, Copy)]
+enum AcrylicMode { Off, Fake, Auto }
+
+struct UiConfig {
+    dark: bool,
+    opacity: f64,
+    max_preview_chars: usize,
+    max_image_preview_bytes: usize,
+    preview_height: i32,
+    preview_min_height: i32,
+    acrylic: AcrylicMode,
+    blur_strength: f32,
+}
 
 fn load_ui_config() -> UiConfig {
-    let mut cfg = UiConfig { dark: true, opacity: 1.0, max_preview_chars: 200_000, max_image_preview_bytes: 10_000_000 };
+    let mut cfg = UiConfig {
+        dark: true,
+        opacity: 1.0,
+        max_preview_chars: 200_000,
+        max_image_preview_bytes: 10_000_000,
+        preview_height: 360,
+        preview_min_height: 180,
+        acrylic: AcrylicMode::Fake,
+        blur_strength: 0.4,
+    };
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let path = std::path::Path::new(&home).join(".config/clipdash/config.toml");
     if let Ok(s) = std::fs::read_to_string(path) {
@@ -53,6 +74,15 @@ fn load_ui_config() -> UiConfig {
                 if let Ok(n) = v.trim_matches('"').parse::<usize>() { cfg.max_preview_chars = n.max(10_000).min(2_000_000); }
             } else if k.eq_ignore_ascii_case("ui.max_image_preview_bytes") {
                 if let Ok(n) = v.trim_matches('"').parse::<usize>() { cfg.max_image_preview_bytes = n.max(200_000).min(50_000_000); }
+            } else if k.eq_ignore_ascii_case("ui.preview_height") {
+                if let Ok(n) = v.trim_matches('"').parse::<i32>() { cfg.preview_height = n.clamp(120, 2000); }
+            } else if k.eq_ignore_ascii_case("ui.preview_min_height") {
+                if let Ok(n) = v.trim_matches('"').parse::<i32>() { cfg.preview_min_height = n.clamp(80, 1000); }
+            } else if k.eq_ignore_ascii_case("ui.acrylic") {
+                let vv = v.trim_matches('"').to_ascii_lowercase();
+                cfg.acrylic = match vv.as_str() { "off" => AcrylicMode::Off, "fake" => AcrylicMode::Fake, "auto" => AcrylicMode::Auto, _ => AcrylicMode::Fake };
+            } else if k.eq_ignore_ascii_case("ui.blur_strength") {
+                if let Ok(f) = v.trim_matches('"').parse::<f32>() { cfg.blur_strength = f.clamp(0.0, 1.0); }
             }
         }
     }
@@ -64,7 +94,7 @@ pub fn run() -> Result<(), String> {
     let ui_cfg = load_ui_config();
     // CSS provider and initial theme
     let provider = gtk::CssProvider::new();
-    apply_css_with_provider(&provider, ui_cfg.dark);
+    apply_css_with_provider(&provider, &ui_cfg);
 
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_title("Clipdash");
@@ -73,6 +103,23 @@ pub fn run() -> Result<(), String> {
     // Try semi-transparency; may be ignored on Wayland
     if std::env::var("CLIPDASH_UI_NO_OPACITY").ok().as_deref() != Some("1") {
         window.set_opacity(ui_cfg.opacity);
+    }
+
+    // Xorg 下尝试启用 RGBA 透明背景（每像素 alpha）
+    // 要求：合成器可用（大多数 GNOME/KDE 在 Xorg 默认有），并且启用了 ARGB visual
+    if std::env::var("XDG_SESSION_TYPE").ok().as_deref() == Some("x11") {
+        if let Some(screen) = Screen::default() {
+            if screen.is_composited() {
+                if let Some(vis) = screen.rgba_visual() {
+                    window.set_app_paintable(true);
+                    window.set_visual(Some(&vis));
+                    // 窗口背景设为透明；其余由 .surface/.card 负责绘制半透明面板
+                    let tp = gtk::CssProvider::new();
+                    let _ = tp.load_from_data(b"window { background-color: transparent; }\n");
+                    gtk::StyleContext::add_provider_for_screen(&screen, &tp, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+                }
+            }
+        }
     }
 
     let vbox = gtk::Box::new(Orientation::Vertical, 6);
@@ -175,7 +222,9 @@ pub fn run() -> Result<(), String> {
     let pane = gtk::Paned::new(Orientation::Vertical);
     pane.add1(&stack);
     pane.add2(&preview_revealer);
-    pane.set_position(360);
+    // 预览区最小高度，初始高度
+    preview_frame.set_size_request(-1, ui_cfg.preview_min_height);
+    pane.set_position(ui_cfg.preview_height);
     vbox.pack_start(&pane, true, true, 0);
     window.add(&vbox);
 
@@ -316,6 +365,7 @@ pub fn run() -> Result<(), String> {
         let preview_stack_ui = preview_stack.clone();
         let preview_text_ui = preview_text.clone();
         let preview_image_ui = preview_image.clone();
+        let image_scroller_ui = image_scroller.clone();
         let zoom_fit_ui = zoom_fit.clone();
         let last_pix_ui = last_pix.clone();
         let seq_ui = preview_seq.clone();
@@ -340,15 +390,13 @@ pub fn run() -> Result<(), String> {
                 }
                 PreviewMsg::Image { mime: _mime, bytes } => {
                     let loader = PixbufLoader::new();
-                    // 尽量限制尺寸，避免过大分配
-                    let alloc = preview_stack_ui.allocation();
-                    let max_w = (alloc.width - 24).max(200);
-                    let max_h = 420;
-                    loader.set_size(max_w, max_h);
                     let _ = loader.write(&bytes);
                     let _ = loader.close();
                     if let Some(pix) = loader.pixbuf() {
                         *last_pix_ui.borrow_mut() = Some(pix.clone());
+                        let alloc = image_scroller_ui.allocation();
+                        let max_w = (alloc.width - 24).max(100);
+                        let max_h = (alloc.height - 24).max(100);
                         let scaled = if *zoom_fit_ui.borrow() { scale_pixbuf_fit(&pix, max_w, max_h) } else { pix.clone() };
                         preview_image_ui.set_from_pixbuf(Some(&scaled));
                         preview_stack_ui.set_visible_child_name("image");
@@ -439,15 +487,16 @@ pub fn run() -> Result<(), String> {
 
         // Fit button: scale to fit container
         let preview_stack_fit = preview_stack.clone();
+        let image_scroller_fit = image_scroller.clone();
         let preview_image_fit = preview_image.clone();
         let zoom_fit_fit = zoom_fit.clone();
         let last_pix_fit = last_pix.clone();
         btn_fit.connect_clicked(move |_| {
             *zoom_fit_fit.borrow_mut() = true;
             if let Some(pix) = last_pix_fit.borrow().clone() {
-                let alloc = preview_stack_fit.allocation();
-                let max_w = (alloc.width - 24).max(200);
-                let max_h = 420;
+                let alloc = image_scroller_fit.allocation();
+                let max_w = (alloc.width - 24).max(100);
+                let max_h = (alloc.height - 24).max(100);
                 let scaled = scale_pixbuf_fit(&pix, max_w, max_h);
                 preview_image_fit.set_from_pixbuf(Some(&scaled));
                 preview_stack_fit.set_visible_child_name("image");
@@ -490,15 +539,47 @@ pub fn run() -> Result<(), String> {
         });
     }
 
+    // 当预览容器大小变化时，若处于“适应窗口”模式则重新缩放，避免拉伸失真
+    {
+        let image_scroller_rsz = image_scroller.clone();
+        let preview_image_rsz = preview_image.clone();
+        let zoom_fit_rsz = zoom_fit.clone();
+        let last_pix_rsz = last_pix.clone();
+        image_scroller.connect_size_allocate(move |sc, _| {
+            if *zoom_fit_rsz.borrow() {
+                if let Some(pix) = last_pix_rsz.borrow().as_ref() {
+                    let alloc = sc.allocation();
+                    let max_w = (alloc.width - 24).max(100);
+                    let max_h = (alloc.height - 24).max(100);
+                    let scaled = scale_pixbuf_fit(pix, max_w, max_h);
+                    preview_image_rsz.set_from_pixbuf(Some(&scaled));
+                }
+            }
+        });
+    }
+
     // Theme toggle button
     {
         let provider_c = provider.clone();
         let dark_state = Rc::new(RefCell::new(ui_cfg.dark));
+        let acrylic_mode = ui_cfg.acrylic;
+        let blur_strength = ui_cfg.blur_strength;
         let dark_ref = dark_state.clone();
         btn_theme.connect_clicked(move |_| {
             let new_dark = !*dark_ref.borrow();
             *dark_ref.borrow_mut() = new_dark;
-            apply_css_with_provider(&provider_c, new_dark);
+            // 重建 CSS，保持其他参数不变
+            let tmp_cfg = UiConfig {
+                dark: new_dark,
+                opacity: 1.0,
+                max_preview_chars: 0,
+                max_image_preview_bytes: 0,
+                preview_height: 0,
+                preview_min_height: 0,
+                acrylic: acrylic_mode,
+                blur_strength,
+            };
+            apply_css_with_provider(&provider_c, &tmp_cfg);
         });
     }
 
@@ -874,12 +955,29 @@ fn css_for_theme(dark: bool) -> String {
 }
 
 #[cfg(feature = "gtk-ui")]
-fn apply_css_with_provider(provider: &gtk::CssProvider, dark: bool) {
+fn apply_css_with_provider(provider: &gtk::CssProvider, cfg: &UiConfig) {
     if let Some(settings) = gtk::Settings::default() {
-        let _ = settings.set_property("gtk-application-prefer-dark-theme", &dark);
+        let _ = settings.set_property("gtk-application-prefer-dark-theme", &cfg.dark);
         let _ = settings.set_property("gtk-enable-animations", &true);
     }
-    let css = css_for_theme(dark);
+    // 基于配置调整透明度（伪亚克力）。这里复用原有模板，按模式替换透明度
+    let mut css = css_for_theme(cfg.dark);
+    // 动态修改 alpha（简单替换，避免大改模板）。
+    // 注意：这是简化实现，真实模糊仍依赖合成器，auto/fake 等价。
+    let (surf_a, card_a) = match cfg.acrylic {
+        AcrylicMode::Off => if cfg.dark { (0.95, 0.98) } else { (0.96, 0.98) },
+        AcrylicMode::Fake | AcrylicMode::Auto => {
+            let s = cfg.blur_strength.clamp(0.0, 1.0);
+            let base_surf = if cfg.dark { 0.82 } else { 0.86 };
+            let base_card = if cfg.dark { 0.88 } else { 0.92 };
+            ((base_surf - 0.18*s).clamp(0.58, 0.98), (base_card - 0.18*s).clamp(0.60, 0.99))
+        }
+    };
+    // 仅替换主要透明度占位（与模板中的默认值匹配进行替换）
+    css = css.replace("rgba(24,24,28,0.82)", &format!("rgba(24,24,28,{:.2})", surf_a));
+    css = css.replace("rgba(42,42,48,0.88)", &format!("rgba(42,42,48,{:.2})", card_a));
+    css = css.replace("rgba(250,250,252,0.86)", &format!("rgba(250,250,252,{:.2})", surf_a));
+    css = css.replace("rgba(255,255,255,0.92)", &format!("rgba(255,255,255,{:.2})", card_a));
     let _ = provider.load_from_data(css.as_bytes());
     if let Some(screen) = Screen::default() {
         gtk::StyleContext::add_provider_for_screen(&screen, provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);

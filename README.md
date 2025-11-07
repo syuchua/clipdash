@@ -103,3 +103,43 @@ clipdash/
 
 ---
 更多细节请参见 `架构.md`。
+
+## Acrylic / 模糊背景（可选）
+
+Clipdash 默认使用“伪亚克力”（半透明 + 阴影）以确保通用性与稳定性。
+
+配置项（~/.config/clipdash/config.toml）：
+- `ui.acrylic = off|fake|auto`（默认 fake）
+  - off：基本不透明（轻微透明）
+  - fake：仅 CSS 半透明与阴影（通用）
+  - auto：与 fake 等价；真实模糊需用户在合成器配置中启用
+- `ui.blur_strength = 0.0..1.0`（默认 0.4）：伪亚克力的“强度”，值越大越透明
+
+注意：真实“毛玻璃”模糊效果依赖桌面合成器，应用端无法在所有 DE 中强制启用。
+
+### X11 + picom 示例
+1) 安装并启用 picom（不同发行版命令略有差异）。
+2) 在 picom 配置中添加匹配 Clipdash UI 的规则（类名多为 `clipdash-ui` 或窗口标题 `Clipdash`）：
+```
+blur:
+  method = "dual_kawase";
+  strength = 6;
+  background = false;
+  background-frame = false;
+
+blur-background-exclude = [
+  "class_g = 'clipdash-ui' && argb"
+];
+
+wintypes:
+  {
+    normal = { blur-background = true; }
+  };
+```
+具体匹配表达式可根据 `xprop` 查询的 `WM_CLASS` 调整。
+
+### KDE Plasma（KWin）
+在“系统设置 → 特殊应用程序设置/窗口规则”中，按窗口类或标题为 Clipdash 创建规则，启用“背景模糊”。Wayland/X11 均可，但需 KDE 特性支持。
+
+### GNOME（Wayland）
+官方无统一窗口模糊接口。建议使用默认“伪亚克力”模式，或查找第三方扩展（兼容性不保证）。

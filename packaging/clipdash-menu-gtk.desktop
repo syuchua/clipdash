@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Clipdash Menu (GTK)
+Comment=Open Clipdash clipboard history (GTK UI)
+Exec=clipdash-ui
+Terminal=false
+Categories=Utility;
+NoDisplay=false
+

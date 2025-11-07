@@ -3,9 +3,14 @@ name = "clipdash-ui"
 version = "0.0.1"
 edition = "2021"
 
+[features]
+default = []
+gtk-ui = ["gtk", "glib"]
+
 [dependencies]
+glib = { version = "0.14", optional = true }
+gtk = { version = "0.14", package = "gtk", optional = true }
 
 [[bin]]
 name = "clipdash-ui"
 path = "src/main.rs"
-

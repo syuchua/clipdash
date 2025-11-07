@@ -26,7 +26,7 @@
 - Arch：
   - `sudo pacman -S --needed base-devel pkgconf sqlite gtk4 libadwaita libx11 libxfixes`
 
-4) 构建与测试（含 demo 守护/CLI/菜单）
+4) 构建与测试（含 demo 守护/CLI/菜单/GTK 原生）
 - 拉取依赖并构建工作区：
   - `cd clipdash`
   - `cargo build`  （首次会下载工具链与依赖）
@@ -43,7 +43,11 @@
     - `cargo run -p clipdash-cli -- pin <id> 1` / `0`
     - `cargo run -p clipdash-cli -- delete <id>`
     - `cargo run -p clipdash-cli -- clear`
-    - `cargo run -p clipdash-cli -- menu`（rofi/wofi/dmenu 弹出菜单，筛选后回车即复制）
+    - `cargo run -p clipdash-cli -- menu`（优先 zenity 弹窗，缺省回退 rofi/wofi/dmenu）
+  - GTK 原生 UI：
+    - 依赖（Ubuntu 20.04）：`sudo apt install -y libgtk-3-dev`
+    - 运行（一次性构建特性）：`cargo run -p clipdash-ui --features gtk-ui`
+    - 开发安装（带 UI）：`CLIPDASH_WITH_GTK=1 bash scripts/install_dev.sh`（安装后可直接运行 `clipdash-ui`）
   - 脚本：`bash scripts/clipdash_menu.sh`
 
 Socket 路径：`$HOME/.cache/clipdash/daemon.sock`。
@@ -56,7 +60,9 @@ Socket 路径：`$HOME/.cache/clipdash/daemon.sock`。
 
 桌面集成与快捷键
 - `.desktop` 启动器：`packaging/clipdash-menu.desktop`（可复制到 `~/.local/share/applications/`）
-- 快捷键绑定：将 Super+V 绑定到 `clipdash menu` 或脚本路径 `scripts/clipdash_menu.sh`
+- 快捷键绑定：
+  - 使用弹窗菜单（zenity/rofi/wofi/dmenu）：将 Super+V 绑定为 `clipdash menu`
+  - 使用 GTK 原生窗口：将 Super+V 绑定为 `clipdash-ui`（需要启用 GTK 构建）
 
 5) 一键集成（开发环境）
 - 安装（构建 release、创建 `~/.local/bin` 链接、安装 systemd --user 与 autostart）

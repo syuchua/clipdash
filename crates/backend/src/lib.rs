@@ -24,7 +24,9 @@ mod tests {
 
     struct Dummy;
     impl ClipboardBackend for Dummy {
-        fn read_current(&self) -> Option<ClipData> { None }
+        fn read_current(&self) -> Option<ClipData> {
+            None
+        }
     }
 
     #[test]

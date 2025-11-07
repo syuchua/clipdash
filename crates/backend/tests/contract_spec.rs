@@ -1,8 +1,10 @@
-use clipdash_backend::{ClipboardBackend, ClipData, ClipKind};
+use clipdash_backend::{ClipData, ClipKind, ClipboardBackend};
 
 struct Dummy;
 impl ClipboardBackend for Dummy {
-    fn read_current(&self) -> Option<ClipData> { None }
+    fn read_current(&self) -> Option<ClipData> {
+        None
+    }
 }
 
 #[test]
@@ -12,4 +14,3 @@ fn backend_contract_emits_change_on_new_selection() {
     let b = Dummy;
     assert!(b.read_current().is_none());
 }
-

@@ -19,6 +19,9 @@ sudo apt install -y \
 
 echo "[clipdash] GTK4 is optional and not required for today's skeleton.\nGTK4 packages may not be available on Ubuntu 20.04 default repos.\nSkip for now; we'll add when the UI is implemented."
 
+echo "[clipdash] Installing clipboard helpers (best-effort): wl-clipboard and xclip"
+sudo apt install -y wl-clipboard xclip || true
+
 if ! command -v cargo >/dev/null 2>&1; then
   echo "[clipdash] Installing Rust via rustup (minimal profile)..."
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
@@ -32,4 +35,3 @@ echo "[clipdash] Adding rust components (clippy, rustfmt)..."
 rustup component add clippy rustfmt || true
 
 echo "[clipdash] Done. Try: cd clipdash && cargo build"
-

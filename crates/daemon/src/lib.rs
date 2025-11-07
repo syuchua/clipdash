@@ -78,6 +78,21 @@ impl State {
                 }
                 "ERR not found".into()
             }
+            "PASTE" => {
+                if let Some(id_s) = parts.next() {
+                    if let Ok(id) = id_s.parse::<u64>() {
+                        if let Some(it) = self.history.all().iter().find(|i| i.id==id) {
+                            if let ItemKind::Text = it.kind {
+                                return match write_clipboard_text(&String::from_utf8_lossy(&it.data)) {
+                                    Ok(()) => "OK".into(),
+                                    Err(e) => format!("ERR {}", e),
+                                };
+                            } else { return "ERR unsupported kind".into(); }
+                        }
+                    }
+                }
+                "ERR not found".into()
+            }
             "PIN" => {
                 let id = parts.next().and_then(|s| s.parse::<u64>().ok());
                 let pv = parts.next().and_then(|s| s.parse::<u8>().ok());
@@ -126,6 +141,8 @@ pub fn run_server_forever() {
     let listener = UnixListener::bind(&path).expect("bind unix socket");
     println!("clipdashd: listening on {}", path.display());
     let state = Arc::new(Mutex::new(State::with_file_persist(data_path())));
+    // spawn clipboard watcher (best-effort)
+    spawn_clipboard_watcher(state.clone());
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {
@@ -145,6 +162,75 @@ fn matches_query(it: &Item, q: &str) -> bool {
         }
         _ => it.title().to_lowercase().contains(q),
     }
+}
+
+fn have_cmd(cmd: &str) -> bool {
+    std::process::Command::new(cmd).arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok()
+}
+
+fn read_clipboard_text() -> Option<String> {
+    // Try Wayland wl-paste first
+    if have_cmd("wl-paste") {
+        if let Ok(out) = std::process::Command::new("wl-paste").arg("--no-newline").output() {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).to_string();
+                if !s.is_empty() { return Some(s); }
+            }
+        }
+    }
+    // Fallback to xclip
+    if have_cmd("xclip") {
+        if let Ok(out) = std::process::Command::new("xclip").args(["-selection","clipboard","-out"]).output() {
+            if out.status.success() {
+                let mut s = String::from_utf8_lossy(&out.stdout).to_string();
+                if s.ends_with('\n') { s.pop(); }
+                if !s.is_empty() { return Some(s); }
+            }
+        }
+    }
+    None
+}
+
+fn write_clipboard_text(text: &str) -> std::io::Result<()> {
+    // Try Wayland wl-copy
+    if have_cmd("wl-copy") {
+        let mut child = std::process::Command::new("wl-copy")
+            .args(["--type","text/plain;charset=utf-8"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() { stdin.write_all(text.as_bytes())?; }
+        let status = child.wait()?;
+        if status.success() { return Ok(()); }
+    }
+    // Fallback to xclip
+    if have_cmd("xclip") {
+        let mut child = std::process::Command::new("xclip")
+            .args(["-selection","clipboard","-in"]) 
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() { stdin.write_all(text.as_bytes())?; }
+        let status = child.wait()?;
+        if status.success() { return Ok(()); }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no clipboard tool (wl-copy/xclip)"))
+}
+
+fn spawn_clipboard_watcher(state: Arc<Mutex<State>>) {
+    thread::spawn(move || {
+        let mut last = String::new();
+        loop {
+            if let Some(s) = read_clipboard_text() {
+                if s != last {
+                    last = s.clone();
+                    // push into history
+                    let mut st = state.lock().unwrap();
+                    let _ = st.history.try_push(Item{ id:0, kind: ItemKind::Text, data: s.into_bytes(), pinned: false});
+                    st.persist_if_needed();
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
+    });
 }
 
 #[cfg(test)]

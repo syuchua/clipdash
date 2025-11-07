@@ -48,6 +48,10 @@ fn main() {
                 Err(e) => eprintln!("{}", e)
             }
         }
+        "copy" => {
+            let Some(id)= args.next() else { usage(); return; };
+            match send(&format!("PASTE {}", id)) { Ok(r) => print!("{}", r), Err(e) => eprintln!("{}", e) }
+        }
         "pin" => {
             let Some(id)= args.next() else { usage(); return; };
             let Some(v)= args.next() else { usage(); return; };

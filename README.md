@@ -36,13 +36,21 @@
   - CLI（连接守护的 demo 命令）：
     - `cargo run -p clipdash-cli -- daemon`（也可直接运行守护）
     - `cargo run -p clipdash-cli -- add-text "hello world"`
-    - `cargo run -p clipdash-cli -- list 10`
+    - `cargo run -p clipdash-cli -- list 10`（或带查询：`list 10 hello`）
     - `cargo run -p clipdash-cli -- get <id>`
+    - `cargo run -p clipdash-cli -- paste <id>`（仅输出原始文本，可与 xclip 等组合）
+    - `cargo run -p clipdash-cli -- copy <id>`（将文本写入系统剪贴板，需安装 wl-clipboard 或 xclip）
     - `cargo run -p clipdash-cli -- pin <id> 1` / `0`
     - `cargo run -p clipdash-cli -- delete <id>`
     - `cargo run -p clipdash-cli -- clear`
 
 Socket 路径：`$HOME/.cache/clipdash/daemon.sock`。
+持久化文件：`$HOME/.local/share/clipdash/history.v1`（十六进制编码的轻量文本格式）。
+
+依赖提示（用于剪贴板集成）：
+- Wayland：安装 `wl-clipboard`（提供 `wl-copy` / `wl-paste`）
+- X11：安装 `xclip`
+守护会自动优先使用 Wayland 工具，其次回退到 xclip；若都不可用，将不进行自动监听，`copy` 命令也会返回错误。
 
 ## 目录结构（skeleton）
 

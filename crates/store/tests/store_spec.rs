@@ -9,6 +9,7 @@ fn mk(n: &str) -> Item {
         pinned: false,
         ts_ms: 0,
         mime: Some("text/plain".into()),
+        file_path: None,
     }
 }
 

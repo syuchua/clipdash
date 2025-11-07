@@ -79,7 +79,7 @@ fn load_config() -> DaemonConfig {
                 }
                 "history.max_items" => {
                     if let Ok(n) = v_str.parse::<usize>() {
-                        cfg.max_items = n.max(10).min(10_000);
+                        cfg.max_items = n.clamp(10, 10_000);
                     }
                 }
                 "history.max_text_bytes" => {
@@ -127,7 +127,7 @@ impl State {
         }
     }
 
-    pub fn with_file_persist(path: PathBuf, cfg: &DaemonConfig) -> Self {
+    pub(crate) fn with_file_persist(path: PathBuf, cfg: &DaemonConfig) -> Self {
         let fs = FileStore::new(&path);
         let mut s = Self {
             history: History::with_config(HistoryConfig {
@@ -200,7 +200,7 @@ impl State {
                         self.persist_if_needed();
                         format!("OK {}", id)
                     }
-                    None => format!("ERR too large"),
+                    None => "ERR too large".to_string(),
                 }
             }
             "LIST" => {
@@ -230,16 +230,16 @@ impl State {
                         }
                     }
                 }
-                let _ = write!(&mut out, "OK {}\n", rows.len());
+                let _ = writeln!(&mut out, "OK {}", rows.len());
                 for (id, kind, pinned, title, mime) in rows {
                     let k = match kind {
                         ItemKind::Text => "Text",
                         ItemKind::Image => "Image",
                         ItemKind::Html => "Html",
                     };
-                    let _ = write!(
+                    let _ = writeln!(
                         &mut out,
-                        "{}\t{}\t{}\t{}\t{}\n",
+                        "{}\t{}\t{}\t{}\t{}",
                         id,
                         k,
                         if pinned { 1 } else { 0 },
@@ -633,10 +633,11 @@ fn read_clipboard_image() -> Option<(Vec<u8>, String)> {
                 .args(["--type", m])
                 .output()
             {
-                if out.status.success() && !out.stdout.is_empty() {
-                    if is_valid_image_bytes(m, &out.stdout) {
-                        return Some((out.stdout, m.to_string()));
-                    }
+                if out.status.success()
+                    && !out.stdout.is_empty()
+                    && is_valid_image_bytes(m, &out.stdout)
+                {
+                    return Some((out.stdout, m.to_string()));
                 }
             }
         }
@@ -647,10 +648,11 @@ fn read_clipboard_image() -> Option<(Vec<u8>, String)> {
                 .args(["-selection", "clipboard", "-o", "-t", m])
                 .output()
             {
-                if out.status.success() && !out.stdout.is_empty() {
-                    if is_valid_image_bytes(m, &out.stdout) {
-                        return Some((out.stdout, m.to_string()));
-                    }
+                if out.status.success()
+                    && !out.stdout.is_empty()
+                    && is_valid_image_bytes(m, &out.stdout)
+                {
+                    return Some((out.stdout, m.to_string()));
                 }
             }
         }

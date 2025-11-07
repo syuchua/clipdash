@@ -1,4 +1,4 @@
-use std::{env, io::{Read, Write}, os::unix::net::UnixStream, path::PathBuf};
+use std::{env, io::{Read, Write}, os::unix::net::UnixStream, path::PathBuf, net::Shutdown};
 
 fn socket_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -8,6 +8,8 @@ fn socket_path() -> PathBuf {
 fn send(cmd: &str) -> std::io::Result<String> {
     let mut s = UnixStream::connect(socket_path())?;
     s.write_all(cmd.as_bytes())?;
+    s.write_all(b"\n")?; // signal end-of-command for line-based protocol
+    let _ = s.shutdown(Shutdown::Write);
     let mut buf = String::new();
     s.read_to_string(&mut buf)?;
     Ok(buf)

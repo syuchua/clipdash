@@ -1,4 +1,4 @@
-use std::{fmt::Write as _, env, fs, io::{Read, Write}, os::unix::net::{UnixListener, UnixStream}, path::PathBuf, thread, sync::{Arc, Mutex}};
+use std::{fmt::Write as _, env, fs, io::{Read, Write, BufRead, BufReader}, os::unix::net::{UnixListener, UnixStream}, path::PathBuf, thread, sync::{Arc, Mutex}};
 
 use clipdash_core::{history::{History, HistoryConfig}, Item, ItemKind};
 use clipdash_store::FileStore;
@@ -127,12 +127,16 @@ fn data_path() -> PathBuf {
 }
 
 fn handle_client(mut stream: UnixStream, state: &Arc<Mutex<State>>) {
-    let mut buf = String::new();
-    let _ = stream.read_to_string(&mut buf);
-    if let Some(line) = buf.lines().next() {
-        let resp = state.lock().unwrap().handle_command(line);
-        let _ = stream.write_all(resp.as_bytes());
+    // Read a single line command to avoid read-to-EOF deadlocks
+    let mut line = String::new();
+    {
+        let mut reader = BufReader::new(&mut stream);
+        if reader.read_line(&mut line).is_err() {
+            return;
+        }
     }
+    let resp = state.lock().unwrap().handle_command(line.trim_end());
+    let _ = stream.write_all(resp.as_bytes());
 }
 
 pub fn run_server_forever() {

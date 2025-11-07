@@ -42,41 +42,46 @@ pub fn run() -> Result<(), String> {
     vbox.pack_start(&scroller, true, true, 0);
     window.add(&vbox);
 
+    // Channel to update list from worker thread
+    let (tx, rx) = glib::MainContext::channel::<Vec<(u64, String)>>(glib::PRIORITY_DEFAULT);
+    {
+        let list = list.clone();
+        rx.attach(None, move |items| {
+            for child in list.children() { list.remove(&child); }
+            for (id, title) in items {
+                let row = gtk::ListBoxRow::new();
+                let hbox = gtk::Box::new(Orientation::Horizontal, 6);
+                let id_label = gtk::Label::new(Some(&format!("{}", id)));
+                id_label.set_xalign(0.0);
+                id_label.style_context().add_class("dim-label");
+                let title_label = gtk::Label::new(Some(&title));
+                title_label.set_xalign(0.0);
+                title_label.set_line_wrap(true);
+                title_label.set_max_width_chars(80);
+                hbox.pack_start(&id_label, false, false, 6);
+                hbox.pack_start(&title_label, true, true, 6);
+                row.add(&hbox);
+                row.set_widget_name(&format!("id:{}", id));
+                list.add(&row);
+            }
+            list.show_all();
+            glib::Continue(true)
+        });
+    }
+
     // Helper to refresh list based on query
     let refresh = {
-        let list = list.clone();
+        let tx = tx.clone();
         move |q: String| {
-            let list = list.clone();
+            let tx = tx.clone();
             std::thread::spawn(move || {
                 let cmd = if q.is_empty() { "LIST 200".to_string() } else { format!("LIST 200 {}", q) };
                 let resp = send(&cmd).unwrap_or_else(|_| "OK 0".into());
                 let mut items: Vec<(u64, String)> = Vec::new();
                 let mut lines = resp.lines();
-                if let Some(h) = lines.next() { if !h.starts_with("OK ") { return; } }
+                if let Some(h) = lines.next() { if !h.starts_with("OK ") { let _ = tx.send(Vec::new()); return; } }
                 for l in lines { let mut p = l.splitn(4, '\t'); if let (Some(id), _, _, Some(title)) = (p.next(), p.next(), p.next(), p.next()) { if let Ok(idn)=id.parse(){ items.push((idn,title.to_string())); } } }
-                glib::idle_add_local(move || {
-                    for child in list.get_children() { list.remove(&child); }
-                    for (id, title) in items {
-                        let row = gtk::ListBoxRow::new();
-                        let hbox = gtk::Box::new(Orientation::Horizontal, 6);
-                        let id_label = gtk::Label::new(Some(&format!("{}", id)));
-                        id_label.set_xalign(0.0);
-                        id_label.get_style_context().add_class("dim-label");
-                        let title_label = gtk::Label::new(Some(&title));
-                        title_label.set_xalign(0.0);
-                        title_label.set_line_wrap(true);
-                        title_label.set_max_width_chars(80);
-                        // keep simple wrapping without ellipsize to avoid extra deps
-                        hbox.pack_start(&id_label, false, false, 6);
-                        hbox.pack_start(&title_label, true, true, 6);
-                        row.add(&hbox);
-                        // store id in widget name for retrieval
-                        row.set_widget_name(&format!("id:{}", id));
-                        list.add(&row);
-                    }
-                    list.show_all();
-                    glib::Continue(false)
-                });
+                let _ = tx.send(items);
             });
         }
     };
@@ -88,7 +93,7 @@ pub fn run() -> Result<(), String> {
     {
         let refresh = refresh.clone();
         entry.connect_changed(move |e| {
-            let q = e.get_text().to_string();
+            let q = e.text().to_string();
             refresh(q);
         });
     }
@@ -97,12 +102,11 @@ pub fn run() -> Result<(), String> {
     {
         let win = window.clone();
         list.connect_row_activated(move |_, row| {
-            if let Some(name) = row.get_widget_name() {
-                if let Some(id_str) = name.strip_prefix("id:") {
-                    if let Ok(id) = id_str.parse::<u64>() {
-                        let _ = send(&format!("PASTE {}", id));
-                        win.close();
-                    }
+            let name = row.widget_name();
+            if let Some(id_str) = name.strip_prefix("id:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    let _ = send(&format!("PASTE {}", id));
+                    win.close();
                 }
             }
         });

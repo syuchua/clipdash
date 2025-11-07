@@ -84,4 +84,11 @@ impl History {
     }
 
     pub fn clear(&mut self) { self.items.clear(); }
+
+    pub fn rebuild_from(&mut self, mut items: Vec<Item>) {
+        // ensure order is preserved and next_id is max+1
+        let next = items.iter().map(|i| i.id).max().unwrap_or(0).saturating_add(1);
+        self.items = items.drain(..).collect();
+        self.next_id = if next == 0 { 1 } else { next };
+    }
 }

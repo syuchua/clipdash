@@ -26,15 +26,23 @@
 - Arch：
   - `sudo pacman -S --needed base-devel pkgconf sqlite gtk4 libadwaita libx11 libxfixes`
 
-4) 构建与测试（当前仅 skeleton）
+4) 构建与测试（含 demo 守护与 CLI）
 - 拉取依赖并构建工作区：
   - `cd clipdash`
   - `cargo build`  （首次会下载工具链与依赖）
 - 运行测试：`cargo test`
 - 运行示例二进制：
-  - 守护：`cargo run -p clipdash-daemon`
-  - UI：`cargo run -p clipdash-ui`
-  - CLI：`cargo run -p clipdash-cli`
+  - 守护（Unix Socket 服务）：`cargo run -p clipdash-daemon`
+  - CLI（连接守护的 demo 命令）：
+    - `cargo run -p clipdash-cli -- daemon`（也可直接运行守护）
+    - `cargo run -p clipdash-cli -- add-text "hello world"`
+    - `cargo run -p clipdash-cli -- list 10`
+    - `cargo run -p clipdash-cli -- get <id>`
+    - `cargo run -p clipdash-cli -- pin <id> 1` / `0`
+    - `cargo run -p clipdash-cli -- delete <id>`
+    - `cargo run -p clipdash-cli -- clear`
+
+Socket 路径：`$HOME/.cache/clipdash/daemon.sock`。
 
 ## 目录结构（skeleton）
 

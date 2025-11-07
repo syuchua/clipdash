@@ -1,14 +1,30 @@
 use std::{fmt::Write as _, env, fs, io::{Read, Write}, os::unix::net::{UnixListener, UnixStream}, path::PathBuf, thread, sync::{Arc, Mutex}};
 
 use clipdash_core::{history::{History, HistoryConfig}, Item, ItemKind};
+use clipdash_store::FileStore;
 
 pub struct State {
     pub history: History,
+    persist: Option<FileStore>,
 }
 
 impl State {
     pub fn new_default() -> Self {
-        Self { history: History::with_config(HistoryConfig::default()) }
+        Self { history: History::with_config(HistoryConfig::default()), persist: None }
+    }
+
+    pub fn with_file_persist(path: PathBuf) -> Self {
+        let fs = FileStore::new(&path);
+        let mut s = Self { history: History::with_config(HistoryConfig::default()), persist: Some(fs) };
+        // try load existing
+        if let Some(store) = &s.persist {
+            if let Ok(items) = store.load() { s.history.rebuild_from(items); }
+        }
+        s
+    }
+
+    fn persist_if_needed(&self) {
+        if let Some(store) = &self.persist { let _ = store.save(self.history.all()); }
     }
 
     /// Handle a single line command and return a response string.
@@ -26,7 +42,7 @@ impl State {
             "ADD_TEXT" => {
                 let text = parts.next().unwrap_or("");
                 let id = self.history.try_push(Item { id: 0, kind: ItemKind::Text, data: text.as_bytes().to_vec(), pinned: false });
-                match id { Some(id) => format!("OK {}", id), None => format!("ERR text too large") }
+                match id { Some(id) => { self.persist_if_needed(); format!("OK {}", id) }, None => format!("ERR text too large") }
             }
             "LIST" => {
                 let lim_s = parts.next().unwrap_or("50");
@@ -59,16 +75,16 @@ impl State {
                 let id = parts.next().and_then(|s| s.parse::<u64>().ok());
                 let pv = parts.next().and_then(|s| s.parse::<u8>().ok());
                 match (id, pv) {
-                    (Some(id), Some(v)) => { self.history.pin(id, v!=0); "OK".into() }
+                    (Some(id), Some(v)) => { self.history.pin(id, v!=0); self.persist_if_needed(); "OK".into() }
                     _ => "ERR invalid args".into()
                 }
             }
             "DELETE" => {
                 if let Some(id) = parts.next().and_then(|s| s.parse::<u64>().ok()) {
-                    if self.history.delete(id) { "OK".into() } else { "ERR not found".into() }
+                    if self.history.delete(id) { self.persist_if_needed(); "OK".into() } else { "ERR not found".into() }
                 } else { "ERR invalid args".into() }
             }
-            "CLEAR" => { self.history.clear(); "OK".into() }
+            "CLEAR" => { self.history.clear(); self.persist_if_needed(); "OK".into() }
             _ => "ERR unknown".into(),
         }
     }
@@ -79,6 +95,13 @@ fn socket_path() -> PathBuf {
     let dir = PathBuf::from(home).join(".cache/clipdash");
     fs::create_dir_all(&dir).ok();
     dir.join("daemon.sock")
+}
+
+fn data_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
+    let dir = PathBuf::from(home).join(".local/share/clipdash");
+    fs::create_dir_all(&dir).ok();
+    dir.join("history.v1")
 }
 
 fn handle_client(mut stream: UnixStream, state: &Arc<Mutex<State>>) {
@@ -95,7 +118,7 @@ pub fn run_server_forever() {
     if path.exists() { let _ = fs::remove_file(&path); }
     let listener = UnixListener::bind(&path).expect("bind unix socket");
     println!("clipdashd: listening on {}", path.display());
-    let state = Arc::new(Mutex::new(State::new_default()));
+    let state = Arc::new(Mutex::new(State::with_file_persist(data_path())));
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {

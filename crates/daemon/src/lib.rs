@@ -84,12 +84,12 @@ fn load_config() -> DaemonConfig {
                 }
                 "history.max_text_bytes" => {
                     if let Ok(n) = v_str.parse::<usize>() {
-                        cfg.max_text_bytes = n.max(1024).min(10_000_000);
+                        cfg.max_text_bytes = n.clamp(1024, 10_000_000);
                     }
                 }
                 "history.max_image_bytes" => {
                     if let Ok(n) = v_str.parse::<usize>() {
-                        cfg.max_image_bytes = n.max(10_000).min(200_000_000);
+                        cfg.max_image_bytes = n.clamp(10_000, 200_000_000);
                     }
                 }
                 "history.ttl_secs" => {
@@ -99,12 +99,12 @@ fn load_config() -> DaemonConfig {
                 }
                 "cache.images.max_bytes" => {
                     if let Ok(n) = v_str.parse::<u64>() {
-                        cfg.cache_images_max_bytes = n.max(1_000_000).min(10_000_000_000);
+                        cfg.cache_images_max_bytes = n.clamp(1_000_000, 10_000_000_000);
                     }
                 }
                 "cache.html.max_bytes" => {
                     if let Ok(n) = v_str.parse::<u64>() {
-                        cfg.cache_html_max_bytes = n.max(1_000_000).min(10_000_000_000);
+                        cfg.cache_html_max_bytes = n.clamp(1_000_000, 10_000_000_000);
                     }
                 }
                 _ => {}
@@ -181,7 +181,7 @@ impl State {
                         self.persist_if_needed();
                         format!("OK {}", id)
                     }
-                    None => format!("ERR text too large"),
+                    None => "ERR text too large".to_string(),
                 }
             }
             "ADD_HTML" => {

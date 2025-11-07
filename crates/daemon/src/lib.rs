@@ -6,6 +6,70 @@ use base64::engine::general_purpose::STANDARD as B64;
 use clipdash_core::{history::{History, HistoryConfig}, Item, ItemKind};
 use clipdash_store::FileStore;
 
+#[derive(Clone, Debug)]
+struct DaemonConfig {
+    // watch toggles
+    watch_text: bool,
+    watch_html: bool,
+    watch_image: bool,
+    // history
+    max_items: usize,
+    max_text_bytes: usize,
+    max_image_bytes: usize,
+    ttl_secs: u64,
+    // cache quotas
+    cache_images_max_bytes: u64,
+    cache_html_max_bytes: u64,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            watch_text: true,
+            watch_html: true,
+            watch_image: true,
+            max_items: 200,
+            max_text_bytes: 100_000,
+            max_image_bytes: 2_000_000,
+            ttl_secs: 0,
+            cache_images_max_bytes: 100 * 1024 * 1024,
+            cache_html_max_bytes: 50 * 1024 * 1024,
+        }
+    }
+}
+
+fn config_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".config/clipdash/config.toml")
+}
+
+fn load_config() -> DaemonConfig {
+    let mut cfg = DaemonConfig::default();
+    if let Ok(s) = fs::read_to_string(config_path()) {
+        for line in s.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') { continue; }
+            let mut p = line.splitn(2, '=');
+            let k = p.next().map(|v| v.trim()).unwrap_or("");
+            let v = p.next().map(|v| v.trim()).unwrap_or("");
+            let v_str = v.trim_matches('"');
+            match k.to_ascii_lowercase().as_str() {
+                "watch.text" => { cfg.watch_text = matches!(v_str, "1"|"true"|"on"|"yes"); }
+                "watch.html" => { cfg.watch_html = matches!(v_str, "1"|"true"|"on"|"yes"); }
+                "watch.image" => { cfg.watch_image = matches!(v_str, "1"|"true"|"on"|"yes"); }
+                "history.max_items" => { if let Ok(n) = v_str.parse::<usize>() { cfg.max_items = n.max(10).min(10_000); } }
+                "history.max_text_bytes" => { if let Ok(n) = v_str.parse::<usize>() { cfg.max_text_bytes = n.max(1024).min(10_000_000); } }
+                "history.max_image_bytes" => { if let Ok(n) = v_str.parse::<usize>() { cfg.max_image_bytes = n.max(10_000).min(200_000_000); } }
+                "history.ttl_secs" => { if let Ok(n) = v_str.parse::<u64>() { cfg.ttl_secs = n; } }
+                "cache.images.max_bytes" => { if let Ok(n) = v_str.parse::<u64>() { cfg.cache_images_max_bytes = n.max(1_000_000).min(10_000_000_000); } }
+                "cache.html.max_bytes" => { if let Ok(n) = v_str.parse::<u64>() { cfg.cache_html_max_bytes = n.max(1_000_000).min(10_000_000_000); } }
+                _ => {}
+            }
+        }
+    }
+    cfg
+}
+
 pub struct State {
     pub history: History,
     persist: Option<FileStore>,
@@ -16,9 +80,14 @@ impl State {
         Self { history: History::with_config(HistoryConfig::default()), persist: None }
     }
 
-    pub fn with_file_persist(path: PathBuf) -> Self {
+    pub fn with_file_persist(path: PathBuf, cfg: &DaemonConfig) -> Self {
         let fs = FileStore::new(&path);
-        let mut s = Self { history: History::with_config(HistoryConfig::default()), persist: Some(fs) };
+        let mut s = Self { history: History::with_config(HistoryConfig {
+            max_items: cfg.max_items,
+            max_text_bytes: cfg.max_text_bytes,
+            max_image_bytes: cfg.max_image_bytes,
+            ttl_secs: cfg.ttl_secs,
+        }), persist: Some(fs) };
         // try load existing
         if let Some(store) = &s.persist {
             if let Ok(items) = store.load() { s.history.rebuild_from(items); }
@@ -196,19 +265,20 @@ fn handle_client(mut stream: UnixStream, state: &Arc<Mutex<State>>) {
 }
 
 pub fn run_server_forever() {
+    let cfg = load_config();
     let path = socket_path();
     if path.exists() { let _ = fs::remove_file(&path); }
     let listener = UnixListener::bind(&path).expect("bind unix socket");
     println!("clipdashd: listening on {}", path.display());
-    let state = Arc::new(Mutex::new(State::with_file_persist(data_path())));
+    let state = Arc::new(Mutex::new(State::with_file_persist(data_path(), &cfg)));
     // Cleanup caches on startup (100MB images, 50MB html)
     let root = cache_root();
     let img_dir = root.join("images"); let _ = fs::create_dir_all(&img_dir);
     let html_dir = root.join("html"); let _ = fs::create_dir_all(&html_dir);
-    cleanup_cache_dir(&img_dir, 100 * 1024 * 1024);
-    cleanup_cache_dir(&html_dir, 50 * 1024 * 1024);
+    cleanup_cache_dir(&img_dir, cfg.cache_images_max_bytes);
+    cleanup_cache_dir(&html_dir, cfg.cache_html_max_bytes);
     // spawn clipboard watcher (best-effort)
-    spawn_clipboard_watcher(state.clone());
+    spawn_clipboard_watcher(state.clone(), cfg.clone());
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {
@@ -405,13 +475,14 @@ fn write_clipboard_image(bytes: &[u8], mime: &str) -> std::io::Result<()> {
     Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no image clipboard tool"))
 }
 
-fn spawn_clipboard_watcher(state: Arc<Mutex<State>>) {
+fn spawn_clipboard_watcher(state: Arc<Mutex<State>>, cfg: DaemonConfig) {
     thread::spawn(move || {
         let mut last_kind: Option<ClipKind> = None;
         let mut last_bytes: Vec<u8> = Vec::new();
         loop {
             // Prefer image -> html -> text
-            if let Some((bytes, mime)) = read_clipboard_image() {
+            if cfg.watch_image {
+                if let Some((bytes, mime)) = read_clipboard_image() {
                 if !(matches!(last_kind, Some(ClipKind::Image)) && bytes == last_bytes) {
                     last_kind = Some(ClipKind::Image); last_bytes = bytes.clone();
                     // Decide inline or externalize by size
@@ -429,13 +500,16 @@ fn spawn_clipboard_watcher(state: Arc<Mutex<State>>) {
                         let ext = if mime.contains("png") { "png" } else if mime.contains("jpeg") || mime.contains("jpg") { "jpg" } else if mime.contains("webp") { "webp" } else { "bin" };
                         let path = cache_dir.join(format!("img-{}.{}", ts, ext));
                         if std::fs::write(&path, &last_bytes).is_ok() { item.file_path = Some(path.to_string_lossy().to_string()); } else { item.data = bytes; }
-                        cleanup_cache_dir(&cache_dir, 100 * 1024 * 1024);
+                        cleanup_cache_dir(&cache_dir, cfg.cache_images_max_bytes);
                     }
                     let mut st = state.lock().unwrap();
                     let _ = st.history.try_push(item);
                     st.persist_if_needed();
                 }
-            } else if let Some(html) = read_clipboard_html() {
+                }
+            }
+            if cfg.watch_html {
+                if let Some(html) = read_clipboard_html() {
                 let b = html.as_bytes().to_vec();
                 if !(matches!(last_kind, Some(ClipKind::Html)) && b == last_bytes) {
                     last_kind = Some(ClipKind::Html); last_bytes = b.clone();
@@ -451,19 +525,23 @@ fn spawn_clipboard_watcher(state: Arc<Mutex<State>>) {
                         };
                         let path = cache_dir.join(format!("html-{}.html", ts));
                         if std::fs::write(&path, &last_bytes).is_ok() { item.file_path = Some(path.to_string_lossy().to_string()); } else { item.data = b; }
-                        cleanup_cache_dir(&cache_dir, 50 * 1024 * 1024);
+                        cleanup_cache_dir(&cache_dir, cfg.cache_html_max_bytes);
                     }
                     let mut st = state.lock().unwrap();
                     let _ = st.history.try_push(item);
                     st.persist_if_needed();
                 }
-            } else if let Some(s) = read_clipboard_text() {
+                }
+            }
+            if cfg.watch_text {
+                if let Some(s) = read_clipboard_text() {
                 let b = s.as_bytes().to_vec();
                 if !(matches!(last_kind, Some(ClipKind::Text)) && b == last_bytes) {
                     last_kind = Some(ClipKind::Text); last_bytes = b.clone();
                     let mut st = state.lock().unwrap();
                     let _ = st.history.try_push(Item{ id:0, kind: ItemKind::Text, data: b, pinned: false, ts_ms: 0, mime: Some("text/plain".into()), file_path: None});
                     st.persist_if_needed();
+                }
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(1000));

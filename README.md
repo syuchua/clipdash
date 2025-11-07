@@ -128,16 +128,18 @@ ui.max_preview_chars = 200000
 ui.max_image_preview_bytes = 10000000
 ```
 
-守护/采集（计划/可选）
-- `watch.text = true|false` 是否采集文本
-- `watch.html = true|false` 是否采集 HTML（默认建议 true，但 UI 预览按纯文本渲染）
-- `watch.image = true|false` 是否采集图片
+守护/采集（已实现）
+- `watch.text = true|false` 是否采集文本（默认 true）
+- `watch.html = true|false` 是否采集 HTML（默认 true；UI 预览按纯文本渲染）
+- `watch.image = true|false` 是否采集图片（默认 true）
 - `history.max_items = 200` 最大条目
+- `history.max_text_bytes = 100000` 文本条目字节上限
+- `history.max_image_bytes = 2000000` 图片条目字节上限（入库阈值）
 - `history.ttl_secs = 0` 有效期（0 表示无限）
-- `cache.images.max_bytes = 104857600` 图片缓存配额
-- `cache.html.max_bytes = 52428800` HTML 缓存配额
+- `cache.images.max_bytes = 104857600` 图片缓存配额（默认 100MB）
+- `cache.html.max_bytes = 52428800` HTML 缓存配额（默认 50MB）
 
-注：上述“计划”项会逐步落地；当前守护已内置默认阈值并实现图片/HTML 魔数与判定的稳态过滤。
+注：守护端还对图片进行魔数校验、对 HTML 进行基本结构判定，避免误判；UI 侧对预览大小做了独立的安全上限。
 
 ## 桌面环境兼容性与建议
 

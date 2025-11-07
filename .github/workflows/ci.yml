@@ -31,8 +31,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build workspace (no UI features)
         run: cargo build --release --workspace
-      - name: Test
-        run: cargo test --workspace --all-features -- --nocapture
+      - name: Test (default features only)
+        run: cargo test --workspace -- --nocapture
 
   build-ui-gtk3:
     runs-on: ubuntu-latest

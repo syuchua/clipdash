@@ -1,11 +1,11 @@
 use clipdash_core::{history::{History, HistoryConfig}, Item, ItemKind};
 
 fn text_item(s: &str) -> Item {
-    Item { id: 0, kind: ItemKind::Text, data: s.as_bytes().to_vec(), pinned: false, ts_ms: 0 }
+    Item { id: 0, kind: ItemKind::Text, data: s.as_bytes().to_vec(), pinned: false, ts_ms: 0, mime: None, file_path: None }
 }
 
 fn image_item(n: usize) -> Item {
-    Item { id: 0, kind: ItemKind::Image, data: vec![0u8; n], pinned: false, ts_ms: 0 }
+    Item { id: 0, kind: ItemKind::Image, data: vec![0u8; n], pinned: false, ts_ms: 0, mime: Some("image/png".into()), file_path: None }
 }
 
 #[test]

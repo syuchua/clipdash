@@ -1,4 +1,4 @@
-use clipdash_core::{Item, ItemKind};
+// Intentionally keep backend decoupled from core types for now
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipKind {

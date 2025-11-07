@@ -33,6 +33,8 @@ impl History {
             let mut existing = self.items.remove(pos);
             existing.pinned = existing.pinned || item.pinned;
             existing.ts_ms = now_ms();
+            if existing.mime.is_none() { existing.mime = item.mime.take(); }
+            if existing.file_path.is_none() { existing.file_path = item.file_path.take(); }
             let id = existing.id;
             self.items.push(existing);
             return Some(id);
@@ -56,7 +58,7 @@ impl History {
         Some(id)
     }
 
-    pub fn push(&mut self, mut item: Item) -> u64 {
+    pub fn push(&mut self, item: Item) -> u64 {
         self.try_push(item).expect("push() should be used only for items within limits")
     }
 

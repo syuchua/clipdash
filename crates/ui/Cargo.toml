@@ -5,11 +5,16 @@ edition = "2021"
 
 [features]
 default = []
-gtk-ui = ["gtk", "glib"]
+gtk-ui = ["gtk", "glib", "gdk", "gdk-pixbuf", "base64"]
+html-webkit = ["webkit2gtk"]
 
 [dependencies]
 glib = { version = "0.14", optional = true }
 gtk = { version = "0.14", package = "gtk", optional = true }
+gdk = { version = "0.14", optional = true }
+gdk-pixbuf = { version = "0.14", package = "gdk-pixbuf", optional = true }
+base64 = { version = "0.21", optional = true }
+webkit2gtk = { version = "0.16", optional = true }
 
 [[bin]]
 name = "clipdash-ui"

@@ -23,7 +23,9 @@ impl FileStore {
         let kind = match it.kind { ItemKind::Text => 'T', ItemKind::Image => 'I', ItemKind::Html => 'H' };
         let mut hex = String::with_capacity(it.data.len() * 2);
         for b in &it.data { hex.push(nibble_to_hex(b >> 4)); hex.push(nibble_to_hex(b & 0x0F)); }
-        format!("{}|{}|{}|{}|{}|{}", it.id, kind, if it.pinned {1}else{0}, it.ts_ms, it.data.len(), hex)
+        let mime = it.mime.clone().unwrap_or_default().replace('|', ":");
+        let path = it.file_path.clone().unwrap_or_default().replace('|', ":");
+        format!("{}|{}|{}|{}|{}|{}|{}|{}", it.id, kind, if it.pinned {1}else{0}, it.ts_ms, mime, path, it.data.len(), hex)
     }
 
     fn decode_item(line: &str) -> Option<Item> {
@@ -32,23 +34,33 @@ impl FileStore {
         let kch = parts.next()?.chars().next()?;
         let kind = match kch { 'T' => ItemKind::Text, 'I' => ItemKind::Image, 'H' => ItemKind::Html, _ => return None };
         let pinned = match parts.next()? { "1" => true, _ => false };
-        // Support v2 (with ts) and fallback to v1 (without ts)
-        let next = parts.next()?;
-        let (ts_ms, len_str, hex) = if next.len() > 0 && (next.parse::<i64>().is_ok()) {
-            let ts = next.parse::<i64>().ok()?;
-            let len_s = parts.next()?;
-            let hex = parts.next()?;
-            (ts, len_s, hex)
+        // v4: ts_ms | mime | path | len | hex
+        let n1 = parts.next()?;
+        let (ts_ms, mime_opt, path_opt, len_s, hex_s) = if let Ok(ts) = n1.parse::<i64>() {
+            let mime = parts.next().unwrap_or("");
+            let maybe_path_or_len = parts.next().unwrap_or("");
+            // if parse usize ok -> v3 (no path), else v4 with path
+            if let Ok(_ok_len) = maybe_path_or_len.parse::<usize>() {
+                let len_s = maybe_path_or_len;
+                let hex_s = parts.next()?;
+                (ts, if mime.is_empty() { None } else { Some(mime.to_string()) }, None, len_s, hex_s)
+            } else {
+                let path = maybe_path_or_len;
+                let len_s = parts.next()?;
+                let hex_s = parts.next()?;
+                (ts, if mime.is_empty() { None } else { Some(mime.to_string()) }, if path.is_empty() { None } else { Some(path.to_string()) }, len_s, hex_s)
+            }
         } else {
-            // old format: next is len
-            let len_s = next;
-            let hex = parts.next()?;
-            (current_time_ms(), len_s, hex)
+            // v1/v2 fallback
+            // If header says v2, we saw ts in the stream earlier; but at this point we don't know header. We'll detect by count: if remaining parts are 1 -> hex (v1), else 2 -> hex (v2)
+            let len_s = n1; // actually len
+            let hex_s = parts.next()?;
+            (current_time_ms(), None, None, len_s, hex_s)
         };
-        let len: usize = len_str.parse().ok()?;
-        let data = hex_to_bytes(hex)?;
+        let len: usize = len_s.parse().ok()?;
+        let data = hex_to_bytes(hex_s)?;
         if data.len() != len { return None; }
-        Some(Item { id, kind, data, pinned, ts_ms })
+        Some(Item { id, kind, data, pinned, ts_ms, mime: mime_opt, file_path: path_opt })
     }
 
     pub fn save(&self, items: &[Item]) -> io::Result<()> {
@@ -56,7 +68,7 @@ impl FileStore {
         fs::create_dir_all(&dir)?;
         let tmp = self.path.with_extension("tmp");
         let mut f = fs::File::create(&tmp)?;
-        f.write_all(b"CLIPDASHv2\n")?;
+        f.write_all(b"CLIPDASHv4\n")?;
         for it in items { writeln!(f, "{}", Self::encode_item(it))?; }
         f.flush()?;
         fs::rename(tmp, &self.path)?;
@@ -68,7 +80,7 @@ impl FileStore {
         let mut rdr = BufReader::new(f);
         let mut first = String::new();
         rdr.read_line(&mut first)?;
-        if !(first.starts_with("CLIPDASHv2") || first.starts_with("CLIPDASHv1")) { return Ok(Vec::new()); }
+        if !(first.starts_with("CLIPDASHv4") || first.starts_with("CLIPDASHv3") || first.starts_with("CLIPDASHv2") || first.starts_with("CLIPDASHv1")) { return Ok(Vec::new()); }
         let mut items = Vec::new();
         for line in rdr.lines() {
             let line = line?;
@@ -120,12 +132,13 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip() {
-        let it = Item { id: 42, kind: ItemKind::Text, data: b"hello".to_vec(), pinned: true, ts_ms: 123456 };
+        let it = Item { id: 42, kind: ItemKind::Text, data: b"hello".to_vec(), pinned: true, ts_ms: 123456, mime: Some("text/plain".into()) };
         let line = FileStore::encode_item(&it);
         let dec = FileStore::decode_item(&line).unwrap();
         assert_eq!(dec.id, 42);
         assert!(dec.pinned);
         assert_eq!(String::from_utf8(dec.data).unwrap(), "hello");
         assert_eq!(dec.ts_ms, 123456);
+        assert_eq!(dec.mime.as_deref(), Some("text/plain"));
     }
 }

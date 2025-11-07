@@ -1,4 +1,7 @@
-use std::{fmt::Write as _, env, fs, io::{Read, Write, BufRead, BufReader}, os::unix::net::{UnixListener, UnixStream}, path::PathBuf, thread, sync::{Arc, Mutex}};
+use std::{fmt::Write as _, env, fs, io::{Write, BufRead, BufReader}, os::unix::net::{UnixListener, UnixStream}, path::PathBuf, thread, sync::{Arc, Mutex}};
+use clipdash_backend::ClipKind;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 
 use clipdash_core::{history::{History, HistoryConfig}, Item, ItemKind};
 use clipdash_store::FileStore;
@@ -41,8 +44,13 @@ impl State {
         match cmd.as_str() {
             "ADD_TEXT" => {
                 let text = parts.next().unwrap_or("");
-                let id = self.history.try_push(Item { id: 0, kind: ItemKind::Text, data: text.as_bytes().to_vec(), pinned: false, ts_ms: 0 });
+                let id = self.history.try_push(Item { id: 0, kind: ItemKind::Text, data: text.as_bytes().to_vec(), pinned: false, ts_ms: 0, mime: Some("text/plain".into()), file_path: None });
                 match id { Some(id) => { self.persist_if_needed(); format!("OK {}", id) }, None => format!("ERR text too large") }
+            }
+            "ADD_HTML" => {
+                let html = parts.next().unwrap_or("");
+                let id = self.history.try_push(Item { id: 0, kind: ItemKind::Html, data: html.as_bytes().to_vec(), pinned: false, ts_ms: 0, mime: Some("text/html".into()), file_path: None });
+                match id { Some(id) => { self.persist_if_needed(); format!("OK {}", id) }, None => format!("ERR too large") }
             }
             "LIST" => {
                 let lim_s = parts.next().unwrap_or("50");
@@ -54,14 +62,14 @@ impl State {
                 let mut rows = Vec::new();
                 for it in items.iter().rev() { // most recent first
                     if q.is_empty() || matches_query(it, &q) {
-                        rows.push((it.id, &it.kind, it.pinned, it.title()));
+                        rows.push((it.id, &it.kind, it.pinned, it.title(), it.mime.as_deref().unwrap_or(match it.kind { ItemKind::Text => "text/plain", ItemKind::Html => "text/html", ItemKind::Image => "image/png" })));
                         if rows.len() == limit { break; }
                     }
                 }
                 let _ = write!(&mut out, "OK {}\n", rows.len());
-                for (id, kind, pinned, title) in rows {
+                for (id, kind, pinned, title, mime) in rows {
                     let k = match kind { ItemKind::Text => "Text", ItemKind::Image => "Image", ItemKind::Html => "Html" };
-                    let _ = write!(&mut out, "{}\t{}\t{}\t{}\n", id, k, if pinned {1}else{0}, title);
+                    let _ = write!(&mut out, "{}\t{}\t{}\t{}\t{}\n", id, k, if pinned {1}else{0}, title, mime);
                 }
                 out
             }
@@ -71,7 +79,15 @@ impl State {
                         if let Some(it) = self.history.all().iter().find(|i| i.id==id) {
                             return match it.kind {
                                 ItemKind::Text => format!("TEXT\n{}", String::from_utf8_lossy(&it.data)),
-                                _ => "ERR unsupported kind".into(),
+                                ItemKind::Html => format!("HTML\n{}", String::from_utf8_lossy(&it.data)),
+                                ItemKind::Image => {
+                                    let mime = it.mime.as_deref().unwrap_or("image/png");
+                                    let bytes = if it.data.is_empty() {
+                                        if let Some(path) = &it.file_path { std::fs::read(path).unwrap_or_default() } else { Vec::new() }
+                                    } else { it.data.clone() };
+                                    let b64 = B64.encode(&bytes);
+                                    format!("IMAGE\n{}\n{}", mime, b64)
+                                }
                             };
                         }
                     }
@@ -82,12 +98,22 @@ impl State {
                 if let Some(id_s) = parts.next() {
                     if let Ok(id) = id_s.parse::<u64>() {
                         if let Some(it) = self.history.all().iter().find(|i| i.id==id) {
-                            if let ItemKind::Text = it.kind {
-                                return match write_clipboard_text(&String::from_utf8_lossy(&it.data)) {
-                                    Ok(()) => "OK".into(),
-                                    Err(e) => format!("ERR {}", e),
-                                };
-                            } else { return "ERR unsupported kind".into(); }
+                            return match it.kind {
+                                ItemKind::Text => match write_clipboard_text(&String::from_utf8_lossy(&it.data)) { Ok(()) => "OK".into(), Err(e) => format!("ERR {}", e) },
+                                ItemKind::Html => {
+                                    let mut html = String::from_utf8_lossy(&it.data).to_string();
+                                    if html.is_empty() {
+                                        if let Some(path) = &it.file_path { if let Ok(s) = std::fs::read_to_string(path) { html = s; } }
+                                    }
+                                    match write_clipboard_html(&html) { Ok(()) => "OK".into(), Err(e) => format!("ERR {}", e) }
+                                },
+                                ItemKind::Image => {
+                                    let mime = it.mime.as_deref().unwrap_or("image/png");
+                                    let mut bytes = it.data.clone();
+                                    if bytes.is_empty() { if let Some(path) = &it.file_path { if let Ok(b) = std::fs::read(path) { bytes = b; } } }
+                                    match write_clipboard_image(&bytes, mime) { Ok(()) => "OK".into(), Err(e) => format!("ERR {}", e) }
+                                },
+                            };
                         }
                     }
                 }
@@ -126,6 +152,36 @@ fn data_path() -> PathBuf {
     dir.join("history.v1")
 }
 
+fn cache_root() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
+    let dir = PathBuf::from(home).join(".local/share/clipdash/cache");
+    fs::create_dir_all(&dir).ok();
+    dir
+}
+
+fn cleanup_cache_dir(dir: &PathBuf, max_bytes: u64) {
+    if let Ok(read) = fs::read_dir(dir) {
+        let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+        for e in read.flatten() {
+            let p = e.path();
+            if let Ok(meta) = fs::metadata(&p) { if meta.is_file() {
+                let sz = meta.len();
+                let mt = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                files.push((p, sz, mt));
+            }}
+        }
+        let mut total: u64 = files.iter().map(|(_, sz, _)| *sz).sum();
+        if total > max_bytes {
+            files.sort_by_key(|(_, _, mt)| *mt); // oldest first
+            for (p, sz, _) in files {
+                if total <= max_bytes { break; }
+                let _ = fs::remove_file(&p);
+                total = total.saturating_sub(sz);
+            }
+        }
+    }
+}
+
 fn handle_client(mut stream: UnixStream, state: &Arc<Mutex<State>>) {
     // Read a single line command to avoid read-to-EOF deadlocks
     let mut line = String::new();
@@ -145,6 +201,12 @@ pub fn run_server_forever() {
     let listener = UnixListener::bind(&path).expect("bind unix socket");
     println!("clipdashd: listening on {}", path.display());
     let state = Arc::new(Mutex::new(State::with_file_persist(data_path())));
+    // Cleanup caches on startup (100MB images, 50MB html)
+    let root = cache_root();
+    let img_dir = root.join("images"); let _ = fs::create_dir_all(&img_dir);
+    let html_dir = root.join("html"); let _ = fs::create_dir_all(&html_dir);
+    cleanup_cache_dir(&img_dir, 100 * 1024 * 1024);
+    cleanup_cache_dir(&html_dir, 50 * 1024 * 1024);
     // spawn clipboard watcher (best-effort)
     spawn_clipboard_watcher(state.clone());
     for conn in listener.incoming() {
@@ -219,16 +281,147 @@ fn write_clipboard_text(text: &str) -> std::io::Result<()> {
     Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no clipboard tool (wl-copy/xclip)"))
 }
 
+fn read_clipboard_html() -> Option<String> {
+    // Try Wayland first
+    if have_cmd("wl-paste") {
+        if let Ok(out) = std::process::Command::new("wl-paste").args(["--no-newline","--type","text/html"]).output() {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).to_string();
+                if !s.is_empty() { return Some(s); }
+            }
+        }
+    }
+    // Fallback xclip
+    if have_cmd("xclip") {
+        if let Ok(out) = std::process::Command::new("xclip").args(["-selection","clipboard","-o","-t","text/html"]).output() {
+            if out.status.success() {
+                let mut s = String::from_utf8_lossy(&out.stdout).to_string();
+                if s.ends_with('\n') { s.pop(); }
+                if !s.is_empty() { return Some(s); }
+            }
+        }
+    }
+    None
+}
+
+fn read_clipboard_image() -> Option<(Vec<u8>, String)> {
+    // Try some common image types in order
+    const MIMES: &[&str] = &["image/png", "image/jpeg", "image/webp"];
+    if have_cmd("wl-paste") {
+        for &m in MIMES {
+            if let Ok(out) = std::process::Command::new("wl-paste").args(["--type", m]).output() {
+                if out.status.success() && !out.stdout.is_empty() { return Some((out.stdout, m.to_string())); }
+            }
+        }
+    }
+    if have_cmd("xclip") {
+        for &m in MIMES {
+            if let Ok(out) = std::process::Command::new("xclip").args(["-selection","clipboard","-o","-t", m]).output() {
+                if out.status.success() && !out.stdout.is_empty() { return Some((out.stdout, m.to_string())); }
+            }
+        }
+    }
+    None
+}
+
+fn write_clipboard_html(html: &str) -> std::io::Result<()> {
+    if have_cmd("wl-copy") {
+        let mut child = std::process::Command::new("wl-copy")
+            .args(["--type","text/html"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() { stdin.write_all(html.as_bytes())?; }
+        let status = child.wait()?; if status.success() { return Ok(()); }
+    }
+    if have_cmd("xclip") {
+        let mut child = std::process::Command::new("xclip")
+            .args(["-selection","clipboard","-t","text/html","-in"]) 
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() { stdin.write_all(html.as_bytes())?; }
+        let status = child.wait()?; if status.success() { return Ok(()); }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no html clipboard tool"))
+}
+
+fn write_clipboard_image(bytes: &[u8], mime: &str) -> std::io::Result<()> {
+    if have_cmd("wl-copy") {
+        let mut child = std::process::Command::new("wl-copy")
+            .args(["--type", mime])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() { stdin.write_all(bytes)?; }
+        let status = child.wait()?; if status.success() { return Ok(()); }
+    }
+    if have_cmd("xclip") {
+        let mut child = std::process::Command::new("xclip")
+            .args(["-selection","clipboard","-t", mime, "-in"]) 
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() { stdin.write_all(bytes)?; }
+        let status = child.wait()?; if status.success() { return Ok(()); }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no image clipboard tool"))
+}
+
 fn spawn_clipboard_watcher(state: Arc<Mutex<State>>) {
     thread::spawn(move || {
-        let mut last = String::new();
+        let mut last_kind: Option<ClipKind> = None;
+        let mut last_bytes: Vec<u8> = Vec::new();
         loop {
-            if let Some(s) = read_clipboard_text() {
-                if s != last {
-                    last = s.clone();
-                    // push into history
+            // Prefer image -> html -> text
+            if let Some((bytes, mime)) = read_clipboard_image() {
+                if !(matches!(last_kind, Some(ClipKind::Image)) && bytes == last_bytes) {
+                    last_kind = Some(ClipKind::Image); last_bytes = bytes.clone();
+                    // Decide inline or externalize by size
+                    let cache_dir = cache_root().join("images");
+                    let _ = fs::create_dir_all(&cache_dir);
+                    let mut item = Item{ id:0, kind: ItemKind::Image, data: Vec::new(), pinned: false, ts_ms: 0, mime: Some(mime.clone()), file_path: None};
+                    if bytes.len() <= 200_000 { // inline threshold ~200KB
+                        item.data = bytes;
+                    } else {
+                        let ts = {
+                            use std::time::{SystemTime, UNIX_EPOCH};
+                            let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+                            (d.as_secs() as i64)*1000 + (d.subsec_millis() as i64)
+                        };
+                        let ext = if mime.contains("png") { "png" } else if mime.contains("jpeg") || mime.contains("jpg") { "jpg" } else if mime.contains("webp") { "webp" } else { "bin" };
+                        let path = cache_dir.join(format!("img-{}.{}", ts, ext));
+                        if std::fs::write(&path, &last_bytes).is_ok() { item.file_path = Some(path.to_string_lossy().to_string()); } else { item.data = bytes; }
+                        cleanup_cache_dir(&cache_dir, 100 * 1024 * 1024);
+                    }
                     let mut st = state.lock().unwrap();
-                    let _ = st.history.try_push(Item{ id:0, kind: ItemKind::Text, data: s.into_bytes(), pinned: false, ts_ms: 0});
+                    let _ = st.history.try_push(item);
+                    st.persist_if_needed();
+                }
+            } else if let Some(html) = read_clipboard_html() {
+                let b = html.as_bytes().to_vec();
+                if !(matches!(last_kind, Some(ClipKind::Html)) && b == last_bytes) {
+                    last_kind = Some(ClipKind::Html); last_bytes = b.clone();
+                    // Externalize large html
+                    let cache_dir = cache_root().join("html");
+                    let _ = fs::create_dir_all(&cache_dir);
+                    let mut item = Item{ id:0, kind: ItemKind::Html, data: Vec::new(), pinned: false, ts_ms: 0, mime: Some("text/html".into()), file_path: None};
+                    if b.len() <= 100_000 { item.data = b; } else {
+                        let ts = {
+                            use std::time::{SystemTime, UNIX_EPOCH};
+                            let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+                            (d.as_secs() as i64)*1000 + (d.subsec_millis() as i64)
+                        };
+                        let path = cache_dir.join(format!("html-{}.html", ts));
+                        if std::fs::write(&path, &last_bytes).is_ok() { item.file_path = Some(path.to_string_lossy().to_string()); } else { item.data = b; }
+                        cleanup_cache_dir(&cache_dir, 50 * 1024 * 1024);
+                    }
+                    let mut st = state.lock().unwrap();
+                    let _ = st.history.try_push(item);
+                    st.persist_if_needed();
+                }
+            } else if let Some(s) = read_clipboard_text() {
+                let b = s.as_bytes().to_vec();
+                if !(matches!(last_kind, Some(ClipKind::Text)) && b == last_bytes) {
+                    last_kind = Some(ClipKind::Text); last_bytes = b.clone();
+                    let mut st = state.lock().unwrap();
+                    let _ = st.history.try_push(Item{ id:0, kind: ItemKind::Text, data: b, pinned: false, ts_ms: 0, mime: Some("text/plain".into()), file_path: None});
                     st.persist_if_needed();
                 }
             }

@@ -12,6 +12,8 @@ pub struct Item {
     pub data: Vec<u8>,
     pub pinned: bool,
     pub ts_ms: i64,
+    pub mime: Option<String>,
+    pub file_path: Option<String>,
 }
 
 impl Item {
@@ -42,6 +44,8 @@ mod tests {
             data: s.as_bytes().to_vec(),
             pinned: false,
             ts_ms: 0,
+            mime: None,
+            file_path: None,
         };
         let t = item.title();
         assert!(t.len() <= 40);

@@ -5,11 +5,12 @@ pub struct HistoryConfig {
     pub max_items: usize,
     pub max_text_bytes: usize,
     pub max_image_bytes: usize,
+    pub ttl_secs: u64,
 }
 
 impl Default for HistoryConfig {
     fn default() -> Self {
-        Self { max_items: 200, max_text_bytes: 100_000, max_image_bytes: 2_000_000 }
+        Self { max_items: 200, max_text_bytes: 100_000, max_image_bytes: 2_000_000, ttl_secs: 0 }
     }
 }
 
@@ -31,6 +32,7 @@ impl History {
         if let Some(pos) = self.items.iter().position(|it| it.kind == item.kind && it.data == item.data) {
             let mut existing = self.items.remove(pos);
             existing.pinned = existing.pinned || item.pinned;
+            existing.ts_ms = now_ms();
             let id = existing.id;
             self.items.push(existing);
             return Some(id);
@@ -46,8 +48,10 @@ impl History {
         // Assign id and insert
         item.id = self.next_id;
         self.next_id += 1;
+        item.ts_ms = now_ms();
         let id = item.id;
         self.items.push(item);
+        self.prune_ttl();
         self.trim();
         Some(id)
     }
@@ -91,4 +95,17 @@ impl History {
         self.items = items.drain(..).collect();
         self.next_id = if next == 0 { 1 } else { next };
     }
+
+    pub fn prune_ttl(&mut self) {
+        if self.cfg.ttl_secs == 0 { return; }
+        let now = now_ms();
+        let ttl_ms = (self.cfg.ttl_secs as i64) * 1000;
+        self.items.retain(|it| it.pinned || now - it.ts_ms <= ttl_ms);
+    }
+}
+
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    (dur.as_secs() as i64)*1000 + (dur.subsec_millis() as i64)
 }

@@ -11,6 +11,7 @@ pub struct Item {
     pub kind: ItemKind,
     pub data: Vec<u8>,
     pub pinned: bool,
+    pub ts_ms: i64,
 }
 
 impl Item {
@@ -40,6 +41,7 @@ mod tests {
             kind: ItemKind::Text,
             data: s.as_bytes().to_vec(),
             pinned: false,
+            ts_ms: 0,
         };
         let t = item.title();
         assert!(t.len() <= 40);

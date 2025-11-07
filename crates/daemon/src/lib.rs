@@ -41,7 +41,7 @@ impl State {
         match cmd.as_str() {
             "ADD_TEXT" => {
                 let text = parts.next().unwrap_or("");
-                let id = self.history.try_push(Item { id: 0, kind: ItemKind::Text, data: text.as_bytes().to_vec(), pinned: false });
+                let id = self.history.try_push(Item { id: 0, kind: ItemKind::Text, data: text.as_bytes().to_vec(), pinned: false, ts_ms: 0 });
                 match id { Some(id) => { self.persist_if_needed(); format!("OK {}", id) }, None => format!("ERR text too large") }
             }
             "LIST" => {
@@ -224,7 +224,7 @@ fn spawn_clipboard_watcher(state: Arc<Mutex<State>>) {
                     last = s.clone();
                     // push into history
                     let mut st = state.lock().unwrap();
-                    let _ = st.history.try_push(Item{ id:0, kind: ItemKind::Text, data: s.into_bytes(), pinned: false});
+                    let _ = st.history.try_push(Item{ id:0, kind: ItemKind::Text, data: s.into_bytes(), pinned: false, ts_ms: 0});
                     st.persist_if_needed();
                 }
             }

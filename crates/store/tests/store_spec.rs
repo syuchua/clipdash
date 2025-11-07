@@ -2,7 +2,7 @@ use clipdash_core::{Item, ItemKind};
 use clipdash_store::Store;
 
 fn mk(n: &str) -> Item {
-    Item { id: 0, kind: ItemKind::Text, data: n.as_bytes().to_vec(), pinned: false }
+    Item { id: 0, kind: ItemKind::Text, data: n.as_bytes().to_vec(), pinned: false, ts_ms: 0 }
 }
 
 #[test]

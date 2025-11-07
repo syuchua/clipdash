@@ -58,6 +58,16 @@ Socket 路径：`$HOME/.cache/clipdash/daemon.sock`。
 - `.desktop` 启动器：`packaging/clipdash-menu.desktop`（可复制到 `~/.local/share/applications/`）
 - 快捷键绑定：将 Super+V 绑定到 `clipdash menu` 或脚本路径 `scripts/clipdash_menu.sh`
 
+5) 一键集成（开发环境）
+- 安装（构建 release、创建 `~/.local/bin` 链接、安装 systemd --user 与 autostart）
+  - `bash scripts/install_dev.sh`
+- 卸载：`bash scripts/uninstall_dev.sh`
+- GNOME 快捷键（可选）：
+  - `bash scripts/gnome_bind_super_v.sh`（将 `<Super>v` 绑定为 `clipdash menu`）
+- systemd --user（手动说明）：
+  - 单元文件：`packaging/clipdashd.service`（安装后位于 `~/.config/systemd/user/`）
+  - 启用并启动：`systemctl --user enable --now clipdashd.service`
+
 ## 目录结构（skeleton）
 
 ```

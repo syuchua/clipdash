@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Clipdash Daemon
+Comment=Start Clipdash clipboard daemon on login
+Exec=clipdash-daemon
+X-GNOME-Autostart-enabled=true
+Terminal=false
+Categories=Utility;
+

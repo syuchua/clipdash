@@ -123,6 +123,19 @@ pub fn run() -> Result<(), String> {
     preview_stack.set_transition_type(gtk::StackTransitionType::None);
     preview_stack.add_named(&preview_text, "text");
     preview_stack.add_named(&image_scroller, "image");
+    #[cfg(feature = "html-webkit")]
+    let webview = {
+        use webkit2gtk::prelude::*;
+        let v = webkit2gtk::WebView::new();
+        if let Some(settings) = v.settings() {
+            settings.set_enable_javascript(false);
+            settings.set_enable_plugins(false);
+            settings.set_enable_write_console_messages_to_stdout(false);
+            settings.set_enable_developer_extras(false);
+        }
+        preview_stack.add_named(&v, "html");
+        v
+    };
     preview_stack.set_visible_child_name("text");
     let preview_frame = gtk::Frame::new(Some("Preview"));
     preview_frame.add(&preview_stack);
@@ -158,8 +171,12 @@ pub fn run() -> Result<(), String> {
     stack.add_named(&scroller, "list");
     stack.add_named(&empty_box, "empty");
     stack.set_visible_child_name("list");
-    vbox.pack_start(&stack, true, true, 0);
-    vbox.pack_start(&preview_revealer, false, true, 0);
+    // 通过可拖拽的垂直分割增强预览区域可伸缩性
+    let pane = gtk::Paned::new(Orientation::Vertical);
+    pane.add1(&stack);
+    pane.add2(&preview_revealer);
+    pane.set_position(360);
+    vbox.pack_start(&pane, true, true, 0);
     window.add(&vbox);
 
     // Channel to update list from worker thread
@@ -302,11 +319,19 @@ pub fn run() -> Result<(), String> {
         let zoom_fit_ui = zoom_fit.clone();
         let last_pix_ui = last_pix.clone();
         let seq_ui = preview_seq.clone();
+        #[cfg(feature = "html-webkit")]
+        let webview_ui = webview.clone();
         rxp.attach(None, move |(seqn, msg)| {
             if seqn != seq_ui.load(Ordering::SeqCst) { return glib::Continue(true); }
             match msg {
-                PreviewMsg::Text(s) | PreviewMsg::Html(s) => {
-                    if let Some(buf) = preview_text_ui.buffer() { buf.set_text(&s); }
+                PreviewMsg::Text(s) => {
+                    set_textview_with_markdown(&preview_text_ui, &s);
+                    preview_stack_ui.set_visible_child_name("text");
+                }
+                PreviewMsg::Html(s) => {
+                    // 禁用 HTML 渲染：转为纯文本并按 Markdown 样式（若有）渲染
+                    let plain = html_to_text(&s);
+                    set_textview_with_markdown(&preview_text_ui, &plain);
                     preview_stack_ui.set_visible_child_name("text");
                 }
                 PreviewMsg::ImageTooLarge { mime, size } => {
@@ -697,6 +722,112 @@ fn markup_highlight(s: &str, q: &str) -> String {
     } else {
         glib::markup_escape_text(s).to_string()
     }
+}
+
+#[cfg(feature = "gtk-ui")]
+fn html_to_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for c in input.chars() {
+        match c {
+            '<' => { in_tag = true; }
+            '>' => { in_tag = false; }
+            _ => if !in_tag { out.push(c); }
+        }
+    }
+    out = out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", "\"").replace("&apos;", "'").replace("&nbsp;", " ");
+    out
+}
+
+#[cfg(feature = "gtk-ui")]
+fn set_textview_with_markdown(view: &gtk::TextView, input: &str) {
+    use gtk::prelude::*;
+    use gtk::pango::Style;
+    if let Some(buf) = view.buffer() {
+        buf.set_text("");
+        let table = match buf.tag_table() { Some(t) => t, None => { return; } };
+        let tag_bold = gtk::TextTag::new(Some("md_bold")); tag_bold.set_weight(700);
+        let tag_italic = gtk::TextTag::new(Some("md_italic")); tag_italic.set_style(Style::Italic);
+        let tag_code = gtk::TextTag::new(Some("md_code")); tag_code.set_family(Some("monospace"));
+        let tag_head = gtk::TextTag::new(Some("md_head")); tag_head.set_weight(700); tag_head.set_scale(1.2);
+        table.add(&tag_bold); table.add(&tag_italic); table.add(&tag_code); table.add(&tag_head);
+
+        for raw_line in input.lines() {
+            let mut line = raw_line.to_string();
+            let mut head = false;
+            if line.starts_with("### ") { head = true; line = line[4..].to_string(); }
+            else if line.starts_with("## ") { head = true; line = line[3..].to_string(); }
+            else if line.starts_with("# ") { head = true; line = line[2..].to_string(); }
+            if line.starts_with("- ") || line.starts_with("* ") { line = format!("• {}", &line[2..]); }
+            // 1. item → 1）item（简单处理）
+            if line.len() > 3 && line.chars().nth(1) == Some('.') && line.chars().nth(2) == Some(' ') && line.chars().next().unwrap_or('0').is_ascii_digit() {
+                let mut chars = line.chars();
+                let n = chars.next().unwrap(); let rest: String = chars.skip(2).collect();
+                line = format!("{}）{}", n, rest);
+            }
+
+            // inline: **bold**, `code`
+            let mut i = 0usize; let bytes = line.as_bytes();
+            let mut last = 0usize;
+            while i < bytes.len() {
+                if i + 1 < bytes.len() && &bytes[i..i+2] == b"**" {
+                    if last < i { let mut it = buf.end_iter(); buf.insert(&mut it, &line[last..i]); }
+                    if let Some(j) = line[i+2..].find("**") {
+                        let start_off = buf.end_iter().offset();
+                        let mut it = buf.end_iter();
+                        let content = &line[i+2..i+2+j];
+                        buf.insert(&mut it, content);
+                        let mut s_iter = buf.start_iter(); s_iter.set_offset(start_off);
+                        let e_iter = buf.end_iter();
+                        buf.apply_tag(&tag_bold, &s_iter, &e_iter);
+                        i = i + 2 + j + 2; last = i; continue;
+                    }
+                } else if bytes[i] == b'`' {
+                    if last < i { let mut it = buf.end_iter(); buf.insert(&mut it, &line[last..i]); }
+                    if let Some(j) = line[i+1..].find('`') {
+                        let start_off = buf.end_iter().offset();
+                        let mut it = buf.end_iter();
+                        let content = &line[i+1..i+1+j];
+                        buf.insert(&mut it, content);
+                        let mut s_iter = buf.start_iter(); s_iter.set_offset(start_off);
+                        let e_iter = buf.end_iter();
+                        buf.apply_tag(&tag_code, &s_iter, &e_iter);
+                        i = i + 1 + j + 1; last = i; continue;
+                    }
+                }
+                i += 1;
+            }
+            if last < line.len() { let mut it = buf.end_iter(); buf.insert(&mut it, &line[last..]); }
+            if head {
+                let line_len = line.len() as i32;
+                if line_len > 0 {
+                    let end_off = buf.end_iter().offset();
+                    let start_off = end_off.saturating_sub(line_len);
+                    let mut s_iter = buf.start_iter(); s_iter.set_offset(start_off);
+                    let e_iter = buf.end_iter(); buf.apply_tag(&tag_head, &s_iter, &e_iter);
+                }
+            }
+            let mut it = buf.end_iter(); buf.insert(&mut it, "\n");
+        }
+    }
+}
+#[cfg(feature = "gtk-ui")]
+fn sanitize_html_for_preview(input: &str) -> String {
+    // 目标：避免脚本与外部资源请求；简单将高风险标签转义，保留基本结构
+    // 这里采用简单替换，满足预览需求（非严格 HTML 清洗）
+    let mut s = input.replace("<script", "&lt;script")
+        .replace("</script", "&lt;/script")
+        .replace("<iframe", "&lt;iframe")
+        .replace("</iframe", "&lt;/iframe")
+        .replace("<object", "&lt;object")
+        .replace("</object", "&lt;/object")
+        .replace("<embed", "&lt;embed")
+        .replace("</embed", "&lt;/embed")
+        .replace("<link", "&lt;link")
+        .replace("<img", "&lt;img");
+    // 限制整体长度，进一步保护 UI
+    if s.len() > 500_000 { s.truncate(500_000); s.push_str("\n… [truncated]"); }
+    s
 }
 
 #[cfg(feature = "gtk-ui")]

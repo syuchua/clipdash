@@ -8,8 +8,10 @@ echo "[clipdash] Building release binaries..."
 cargo build --release -p clipdash-daemon -p clipdash-cli
 
 if [[ "${CLIPDASH_WITH_GTK:-0}" == "1" ]]; then
-  echo "[clipdash] Building GTK UI (feature gtk-ui)..."
-  cargo build --release -p clipdash-ui --features gtk-ui || {
+  UI_FEATURES=(gtk-ui)
+  if [[ "${CLIPDASH_WITH_WEBKIT:-0}" == "1" ]]; then UI_FEATURES+=(html-webkit); fi
+  echo "[clipdash] Building GTK UI (features: ${UI_FEATURES[*]})..."
+  cargo build --release -p clipdash-ui --features "${UI_FEATURES[*]}" || {
     echo "[clipdash] GTK UI build failed; skipping UI install" >&2
   }
 fi

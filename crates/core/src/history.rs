@@ -26,23 +26,43 @@ impl History {
     pub fn all(&self) -> &[Item] { &self.items }
 
     pub fn push(&mut self, mut item: Item) -> u64 {
-        // TDD: 去重、容量控制、Pin 保留 等逻辑稍后实现
+        // 去重：相同 kind+data 视为同一条，更新“最近性”（移到末尾），保持原 id
+        if let Some(pos) = self.items.iter().position(|it| it.kind == item.kind && it.data == item.data) {
+            let mut existing = self.items.remove(pos);
+            // 保留 pinned（若新数据为 pinned 也保持）
+            existing.pinned = existing.pinned || item.pinned;
+            let id = existing.id;
+            self.items.push(existing);
+            return id;
+        }
+
+        // 新条目：分配 id 并追加
         item.id = self.next_id;
         self.next_id += 1;
+        let id = item.id;
         self.items.push(item);
-        // 先返回分配的 id；trim() 与去重稍后补充
-        self.next_id - 1
+        self.trim();
+        id
     }
 
     pub fn trim(&mut self) {
-        // TDD: 仅示意，后续实现为“保留 pinned，裁剪未 pinned 的旧项”
-        if self.items.len() > self.cfg.max_items {
-            self.items.drain(0..self.items.len() - self.cfg.max_items);
+        // 保留 pinned，优先从最旧的未 pinned 开始裁剪
+        if self.items.len() <= self.cfg.max_items { return; }
+        let mut to_remove = self.items.len() - self.cfg.max_items;
+        let mut i = 0;
+        while i < self.items.len() && to_remove > 0 {
+            if !self.items[i].pinned {
+                self.items.remove(i);
+                to_remove -= 1;
+                // 不自增 i，因为移除了当前位置
+            } else {
+                i += 1;
+            }
         }
+        // 若仍有超额且全为 pinned，则保留（允许临时超过上限）
     }
 
     pub fn pin(&mut self, id: u64, pinned: bool) {
         if let Some(it) = self.items.iter_mut().find(|it| it.id == id) { it.pinned = pinned; }
     }
 }
-

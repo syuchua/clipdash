@@ -6,13 +6,12 @@ fn mk(n: &str) -> Item {
 }
 
 #[test]
-#[ignore]
 fn store_roundtrip_preserves_item_ordering() {
     let mut s = Store::new_in_memory();
     s.put(mk("a"));
     s.put(mk("b"));
     s.put(mk("c"));
     let titles: Vec<String> = s.all().iter().map(|i| i.title()).collect();
-    assert_eq!(titles, vec!["a".into(), "b".into(), "c".into()]);
+    let expected: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+    assert_eq!(titles, expected);
 }
-

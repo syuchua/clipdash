@@ -5,7 +5,6 @@ fn text_item(s: &str) -> Item {
 }
 
 #[test]
-#[ignore]
 fn core_ring_buffer_keeps_pinned_on_trim() {
     let mut h = History::with_config(HistoryConfig { max_items: 3, ..Default::default() });
     let a = h.push(text_item("a"));
@@ -19,7 +18,6 @@ fn core_ring_buffer_keeps_pinned_on_trim() {
 }
 
 #[test]
-#[ignore]
 fn dedup_updates_timestamp_instead_of_growing() {
     let mut h = History::with_config(HistoryConfig { max_items: 3, ..Default::default() });
     let _a1 = h.push(text_item("same"));
@@ -27,4 +25,3 @@ fn dedup_updates_timestamp_instead_of_growing() {
     let _a2 = h.push(text_item("same"));
     assert_eq!(before, h.len(), "dedup should not increase length");
 }
-

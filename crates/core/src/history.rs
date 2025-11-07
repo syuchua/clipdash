@@ -34,8 +34,12 @@ impl History {
             next_id: 1,
         }
     }
-    pub fn len(&self) -> usize { self.items.len() }
-    pub fn is_empty(&self) -> bool { self.items.is_empty() }
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
     pub fn all(&self) -> &[Item] {
         &self.items
     }

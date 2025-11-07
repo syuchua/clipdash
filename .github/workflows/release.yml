@@ -34,7 +34,8 @@ jobs:
           cargo install cargo-deb --version ^1.42 || true
           cargo deb -p clipdash-cli --no-strip --no-build
           cargo deb -p clipdash-daemon --no-strip --no-build
-          cargo deb -p clipdash-ui --no-strip --no-build --features gtk-ui
+          # UI 已在上一步用 --features gtk-ui 构建过，这里仅打包，不再传递 features 参数
+          cargo deb -p clipdash-ui --no-strip --no-build
           mkdir -p dist && cp -v target/debian/*.deb dist/
       - name: Package tarball
         run: |

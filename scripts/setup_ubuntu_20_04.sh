@@ -22,6 +22,9 @@ echo "[clipdash] GTK4 is optional and not required for today's skeleton.\nGTK4 p
 echo "[clipdash] Installing clipboard helpers (best-effort): wl-clipboard and xclip"
 sudo apt install -y wl-clipboard xclip || true
 
+echo "[clipdash] Installing GTK dialog (zenity)"
+sudo apt install -y zenity || true
+
 if ! command -v cargo >/dev/null 2>&1; then
   echo "[clipdash] Installing Rust via rustup (minimal profile)..."
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal

@@ -96,8 +96,10 @@ fn run_menu() -> std::io::Result<()> {
     // Build menu input: "<id>\t<title>"
     let menu_input = items.iter().map(|(id, title)| format!("{}\t{}", id, title.replace('\n', " "))).collect::<Vec<_>>().join("\n");
 
-    // Prefer rofi, then wofi, then dmenu
-    let choice = if have_cmd("rofi") {
+    // Prefer GTK zenity first (native), then rofi -> wofi -> dmenu
+    let choice = if have_cmd("zenity") {
+        run_zenity_list(&items)?
+    } else if have_cmd("rofi") {
         run_dmenu_like(&menu_input, &["rofi","-dmenu","-p","Clipdash"]) ?
     } else if have_cmd("wofi") {
         run_dmenu_like(&menu_input, &["wofi","--dmenu","--prompt","Clipdash"]) ?
@@ -132,6 +134,32 @@ fn run_dmenu_like(input: &str, cmd: &[&str]) -> std::io::Result<Option<String>> 
         .spawn()?;
     if let Some(stdin) = child.stdin.as_mut() { stdin.write_all(input.as_bytes())?; }
     let out = child.wait_with_output()?;
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout).to_string();
+        if s.trim().is_empty() { Ok(None) } else { Ok(Some(s)) }
+    } else {
+        Ok(None)
+    }
+}
+
+fn run_zenity_list(items: &[(u64, String)]) -> std::io::Result<Option<String>> {
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new("zenity");
+    cmd.arg("--list")
+        .arg("--title=Clipdash")
+        .arg("--width=700")
+        .arg("--height=480")
+        .arg("--print-column=1")
+        .arg("--hide-column=1")
+        .arg("--column=ID")
+        .arg("--column=Title")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped());
+    for (id, title) in items {
+        cmd.arg(id.to_string());
+        cmd.arg(title.replace('\n', " "));
+    }
+    let out = cmd.output()?;
     if out.status.success() {
         let s = String::from_utf8_lossy(&out.stdout).to_string();
         if s.trim().is_empty() { Ok(None) } else { Ok(Some(s)) }

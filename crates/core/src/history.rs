@@ -34,9 +34,8 @@ impl History {
             next_id: 1,
         }
     }
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
+    pub fn len(&self) -> usize { self.items.len() }
+    pub fn is_empty(&self) -> bool { self.items.is_empty() }
     pub fn all(&self) -> &[Item] {
         &self.items
     }
@@ -129,7 +128,7 @@ impl History {
             .max()
             .unwrap_or(0)
             .saturating_add(1);
-        self.items = items.drain(..).collect();
+        self.items = items; // move vector; avoid drain-collect
         self.next_id = if next == 0 { 1 } else { next };
     }
 

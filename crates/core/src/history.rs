@@ -25,24 +25,35 @@ impl History {
     pub fn len(&self) -> usize { self.items.len() }
     pub fn all(&self) -> &[Item] { &self.items }
 
-    pub fn push(&mut self, mut item: Item) -> u64 {
-        // 去重：相同 kind+data 视为同一条，更新“最近性”（移到末尾），保持原 id
+    /// Push with validation; returns Some(id) on success, None if rejected by constraints
+    pub fn try_push(&mut self, mut item: Item) -> Option<u64> {
+        // Dedup first: if equal kind+data exists, move it to the back and keep id
         if let Some(pos) = self.items.iter().position(|it| it.kind == item.kind && it.data == item.data) {
             let mut existing = self.items.remove(pos);
-            // 保留 pinned（若新数据为 pinned 也保持）
             existing.pinned = existing.pinned || item.pinned;
             let id = existing.id;
             self.items.push(existing);
-            return id;
+            return Some(id);
         }
 
-        // 新条目：分配 id 并追加
+        // Size constraints by kind
+        match item.kind {
+            ItemKind::Text if item.data.len() > self.cfg.max_text_bytes => return None,
+            ItemKind::Image if item.data.len() > self.cfg.max_image_bytes => return None,
+            _ => {}
+        }
+
+        // Assign id and insert
         item.id = self.next_id;
         self.next_id += 1;
         let id = item.id;
         self.items.push(item);
         self.trim();
-        id
+        Some(id)
+    }
+
+    pub fn push(&mut self, mut item: Item) -> u64 {
+        self.try_push(item).expect("push() should be used only for items within limits")
     }
 
     pub fn trim(&mut self) {

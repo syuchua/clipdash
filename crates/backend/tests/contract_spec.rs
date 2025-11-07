@@ -1,4 +1,4 @@
-use clipdash_backend::{ClipData, ClipKind, ClipboardBackend};
+use clipdash_backend::{ClipData, ClipboardBackend};
 
 struct Dummy;
 impl ClipboardBackend for Dummy {

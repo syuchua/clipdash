@@ -67,10 +67,7 @@ impl FileStore {
             'H' => ItemKind::Html,
             _ => return None,
         };
-        let pinned = match parts.next()? {
-            "1" => true,
-            _ => false,
-        };
+        let pinned = matches!(parts.next()?, "1");
         // v4: ts_ms | mime | path | len | hex
         let n1 = parts.next()?;
         let (ts_ms, mime_opt, path_opt, len_s, hex_s) = if let Ok(ts) = n1.parse::<i64>() {
@@ -191,7 +188,7 @@ fn nibble_to_hex(n: u8) -> char {
 }
 
 fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -241,6 +238,7 @@ mod tests {
             pinned: true,
             ts_ms: 123456,
             mime: Some("text/plain".into()),
+            file_path: None,
         };
         let line = FileStore::encode_item(&it);
         let dec = FileStore::decode_item(&line).unwrap();

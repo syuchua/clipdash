@@ -33,7 +33,7 @@ fn core_ring_buffer_keeps_pinned_on_trim() {
         max_items: 3,
         ..Default::default()
     });
-    let a = h.push(text_item("a"));
+    let _a = h.push(text_item("a"));
     let b = h.push(text_item("b"));
     h.pin(b, true); // pin b
     let _c = h.push(text_item("c"));
@@ -92,7 +92,7 @@ fn ttl_prunes_unpinned_but_keeps_pinned() {
         max_image_bytes: 100,
         ttl_secs: 1,
     });
-    let ida = h.push(text_item("old"));
+    let _ida = h.push(text_item("old"));
     let idb = h.push(text_item("old pinned"));
     h.pin(idb, true);
     let idc = h.push(text_item("fresh"));

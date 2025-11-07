@@ -14,7 +14,7 @@ fn send(cmd: &str) -> std::io::Result<String> {
 }
 
 fn usage() {
-    eprintln!("clipdash CLI\nCommands:\n  daemon (run daemon)\n  add-text <text>\n  list [limit] [query]\n  get <id>\n  paste <id> (print raw text)\n  pin <id> <0|1>\n  delete <id>\n  clear");
+    eprintln!("clipdash CLI\nCommands:\n  daemon (run daemon)\n  add-text <text>\n  list [limit] [query]\n  get <id>\n  paste <id> (print raw text)\n  copy <id> (to system clipboard)\n  menu (open rofi/wofi/dmenu UI)\n  pin <id> <0|1>\n  delete <id>\n  clear");
 }
 
 fn main() {
@@ -64,6 +64,78 @@ fn main() {
         "clear" => {
             match send("CLEAR") { Ok(r) => print!("{}", r), Err(e) => eprintln!("{}", e) }
         }
+        "menu" => {
+            if let Err(e) = run_menu() { eprintln!("menu error: {}", e); }
+        }
         _ => usage(),
+    }
+}
+
+fn have_cmd(cmd: &str) -> bool {
+    std::process::Command::new(cmd).arg("-v").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok()
+}
+
+fn run_menu() -> std::io::Result<()> {
+    // Fetch latest items
+    let resp = send("LIST 200")?;
+    let mut lines = resp.lines();
+    let header = lines.next().unwrap_or("");
+    if !header.starts_with("OK ") { eprintln!("daemon error: {}", header); return Ok(()); }
+    let mut items: Vec<(u64, String)> = Vec::new();
+    for l in lines {
+        // id\tkind\tpinned\ttitle
+        let mut parts = l.splitn(4, '\t');
+        if let (Some(id), Some(_kind), Some(_pinned), Some(title)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
+            if let Ok(idn) = id.parse::<u64>() {
+                items.push((idn, title.to_string()));
+            }
+        }
+    }
+    if items.is_empty() { return Ok(()); }
+
+    // Build menu input: "<id>\t<title>"
+    let menu_input = items.iter().map(|(id, title)| format!("{}\t{}", id, title.replace('\n', " "))).collect::<Vec<_>>().join("\n");
+
+    // Prefer rofi, then wofi, then dmenu
+    let choice = if have_cmd("rofi") {
+        run_dmenu_like(&menu_input, &["rofi","-dmenu","-p","Clipdash"]) ?
+    } else if have_cmd("wofi") {
+        run_dmenu_like(&menu_input, &["wofi","--dmenu","--prompt","Clipdash"]) ?
+    } else if have_cmd("dmenu") {
+        run_dmenu_like(&menu_input, &["dmenu","-p","Clipdash"]) ?
+    } else {
+        // Fallback: print list and read a line from stdin
+        eprintln!("No rofi/wofi/dmenu found. Falling back to stdin selection. Enter an id:");
+        println!("{}", menu_input);
+        let mut s = String::new();
+        std::io::stdin().read_line(&mut s)?;
+        Some(s)
+    };
+
+    if let Some(ch) = choice {
+        let id_str = ch.split('\t').next().unwrap_or(ch.trim());
+        if let Ok(id) = id_str.trim().parse::<u64>() {
+            // ask daemon to copy to system clipboard
+            match send(&format!("PASTE {}", id)) { Ok(r) => println!("{}", r), Err(e) => eprintln!("{}", e) }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_dmenu_like(input: &str, cmd: &[&str]) -> std::io::Result<Option<String>> {
+    let (prog, args) = cmd.split_first().expect("non-empty cmd");
+    let mut child = std::process::Command::new(prog)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() { stdin.write_all(input.as_bytes())?; }
+    let out = child.wait_with_output()?;
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout).to_string();
+        if s.trim().is_empty() { Ok(None) } else { Ok(Some(s)) }
+    } else {
+        Ok(None)
     }
 }

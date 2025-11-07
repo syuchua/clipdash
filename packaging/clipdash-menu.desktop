@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Clipdash Menu
+Comment=Open Clipdash clipboard history menu
+Exec=clipdash menu
+Terminal=false
+Categories=Utility;
+NoDisplay=false
+

@@ -26,7 +26,7 @@
 - Arch：
   - `sudo pacman -S --needed base-devel pkgconf sqlite gtk4 libadwaita libx11 libxfixes`
 
-4) 构建与测试（含 demo 守护与 CLI）
+4) 构建与测试（含 demo 守护/CLI/菜单）
 - 拉取依赖并构建工作区：
   - `cd clipdash`
   - `cargo build`  （首次会下载工具链与依赖）
@@ -43,6 +43,8 @@
     - `cargo run -p clipdash-cli -- pin <id> 1` / `0`
     - `cargo run -p clipdash-cli -- delete <id>`
     - `cargo run -p clipdash-cli -- clear`
+    - `cargo run -p clipdash-cli -- menu`（rofi/wofi/dmenu 弹出菜单，筛选后回车即复制）
+  - 脚本：`bash scripts/clipdash_menu.sh`
 
 Socket 路径：`$HOME/.cache/clipdash/daemon.sock`。
 持久化文件：`$HOME/.local/share/clipdash/history.v1`（十六进制编码的轻量文本格式）。
@@ -51,6 +53,10 @@ Socket 路径：`$HOME/.cache/clipdash/daemon.sock`。
 - Wayland：安装 `wl-clipboard`（提供 `wl-copy` / `wl-paste`）
 - X11：安装 `xclip`
 守护会自动优先使用 Wayland 工具，其次回退到 xclip；若都不可用，将不进行自动监听，`copy` 命令也会返回错误。
+
+桌面集成与快捷键
+- `.desktop` 启动器：`packaging/clipdash-menu.desktop`（可复制到 `~/.local/share/applications/`）
+- 快捷键绑定：将 Super+V 绑定到 `clipdash menu` 或脚本路径 `scripts/clipdash_menu.sh`
 
 ## 目录结构（skeleton）
 

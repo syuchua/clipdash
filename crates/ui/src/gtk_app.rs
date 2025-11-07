@@ -5,10 +5,11 @@ use gdk_pixbuf::{PixbufLoader, Pixbuf};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 #[cfg(feature = "gtk-ui")]
-use glib::Cast;
+use glib::{Cast, ObjectExt};
 #[cfg(feature = "gtk-ui")]
 use gtk::gdk::ModifierType;
 use std::{cell::RefCell, rc::Rc};
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 #[cfg(feature = "gtk-ui")]
 use std::{io::{Read, Write}, os::unix::net::UnixStream, path::PathBuf};
 
@@ -31,18 +32,46 @@ fn send(cmd: &str) -> std::io::Result<String> {
 }
 
 #[cfg(feature = "gtk-ui")]
+struct UiConfig { dark: bool, opacity: f64, max_preview_chars: usize }
+
+fn load_ui_config() -> UiConfig {
+    let mut cfg = UiConfig { dark: true, opacity: 0.93, max_preview_chars: 200_000 };
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let path = std::path::Path::new(&home).join(".config/clipdash/config.toml");
+    if let Ok(s) = std::fs::read_to_string(path) {
+        for line in s.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') { continue; }
+            let mut parts = line.splitn(2, '=');
+            let k = parts.next().map(|v| v.trim()).unwrap_or("");
+            let v = parts.next().map(|v| v.trim()).unwrap_or("");
+            if k.eq_ignore_ascii_case("ui.dark") {
+                cfg.dark = matches!(v, "true"|"1"|"on"|"yes");
+            } else if k.eq_ignore_ascii_case("ui.opacity") {
+                if let Ok(f) = v.trim_matches('"').parse::<f64>() { cfg.opacity = f.clamp(0.0, 1.0); }
+            } else if k.eq_ignore_ascii_case("ui.max_preview_chars") {
+                if let Ok(n) = v.trim_matches('"').parse::<usize>() { cfg.max_preview_chars = n.max(10_000).min(2_000_000); }
+            }
+        }
+    }
+    cfg
+}
+
 pub fn run() -> Result<(), String> {
     gtk::init().map_err(|e| format!("gtk init: {}", e))?;
-    // CSS provider and initial dark theme
+    let ui_cfg = load_ui_config();
+    // CSS provider and initial theme
     let provider = gtk::CssProvider::new();
-    apply_css_with_provider(&provider, true);
+    apply_css_with_provider(&provider, ui_cfg.dark);
 
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_title("Clipdash");
     window.set_default_size(700, 480);
     window.set_position(gtk::WindowPosition::Center);
     // Try semi-transparency; may be ignored on Wayland
-    window.set_opacity(0.93);
+    if std::env::var("CLIPDASH_UI_NO_OPACITY").ok().as_deref() != Some("1") {
+        window.set_opacity(ui_cfg.opacity);
+    }
 
     let vbox = gtk::Box::new(Orientation::Vertical, 6);
     vbox.style_context().add_class("surface");
@@ -99,6 +128,16 @@ pub fn run() -> Result<(), String> {
     preview_revealer.set_transition_duration(160);
     preview_revealer.add(&preview_frame);
     preview_revealer.set_reveal_child(false);
+
+    // Async preview pipeline (avoid blocking GTK main thread)
+    enum PreviewMsg {
+        Text(String),
+        Html(String),
+        Image { mime: String, bytes: Vec<u8> },
+        Error(String),
+    }
+    let (txp, rxp) = glib::MainContext::channel::<(u64, PreviewMsg)>(glib::PRIORITY_DEFAULT);
+    let preview_seq = Arc::new(AtomicU64::new(0));
 
     vbox.pack_start(&entry, false, false, 0);
     vbox.pack_start(&infobar, false, false, 0);
@@ -160,7 +199,7 @@ pub fn run() -> Result<(), String> {
                 card.set_margin_end(8);
                 card.add(&hbox);
                 row.add(&card);
-                row.set_widget_name(&format!("id:{}", id));
+                row.set_widget_name(&format!("id:{}|p:{}", id, if pinned {1} else {0}));
                 if pinned { pinned_rows.push(row); } else { normal_rows.push(row); }
             }
             for r in pinned_rows { list.add(&r); }
@@ -251,6 +290,82 @@ pub fn run() -> Result<(), String> {
     let zoom_fit = Rc::new(RefCell::new(true));
     let last_pix: Rc<RefCell<Option<Pixbuf>>> = Rc::new(RefCell::new(None));
 
+    // Receive preview results on UI thread
+    {
+        let preview_stack_ui = preview_stack.clone();
+        let preview_text_ui = preview_text.clone();
+        let preview_image_ui = preview_image.clone();
+        let zoom_fit_ui = zoom_fit.clone();
+        let last_pix_ui = last_pix.clone();
+        let seq_ui = preview_seq.clone();
+        rxp.attach(None, move |(seqn, msg)| {
+            if seqn != seq_ui.load(Ordering::SeqCst) { return glib::Continue(true); }
+            match msg {
+                PreviewMsg::Text(s) | PreviewMsg::Html(s) => {
+                    if let Some(buf) = preview_text_ui.buffer() { buf.set_text(&s); }
+                    preview_stack_ui.set_visible_child_name("text");
+                }
+                PreviewMsg::Image { mime: _mime, bytes } => {
+                    let loader = PixbufLoader::new();
+                    let _ = loader.write(&bytes);
+                    let _ = loader.close();
+                    if let Some(pix) = loader.pixbuf() {
+                        *last_pix_ui.borrow_mut() = Some(pix.clone());
+                        let alloc = preview_stack_ui.allocation();
+                        let max_w = (alloc.width - 24).max(200);
+                        let max_h = 420;
+                        let scaled = if *zoom_fit_ui.borrow() { scale_pixbuf_fit(&pix, max_w, max_h) } else { pix.clone() };
+                        preview_image_ui.set_from_pixbuf(Some(&scaled));
+                        preview_stack_ui.set_visible_child_name("image");
+                    } else {
+                        if let Some(buf) = preview_text_ui.buffer() { buf.set_text("[image preview unavailable]"); }
+                        preview_stack_ui.set_visible_child_name("text");
+                    }
+                }
+                PreviewMsg::Error(e) => {
+                    if let Some(buf) = preview_text_ui.buffer() { buf.set_text(&format!("[preview error] {}", e)); }
+                    preview_stack_ui.set_visible_child_name("text");
+                }
+            }
+            glib::Continue(true)
+        });
+    }
+
+    // Helper: request preview asynchronously for current selection
+    let request_preview: std::rc::Rc<dyn Fn()> = {
+        let list_rp = list.clone();
+        let txp = txp.clone();
+        let seq = preview_seq.clone();
+        let max_chars_cfg = ui_cfg.max_preview_chars;
+        std::rc::Rc::new(move || {
+            if let Some(id) = current_selected_id(&list_rp) {
+                let my = seq.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                let txp_outer = txp.clone();
+                std::thread::spawn(move || {
+                    let resp = match send(&format!("GET {}", id)) { Ok(s) => s, Err(e) => { let _ = txp_outer.send((my, PreviewMsg::Error(format!("{}", e)))); return; } };
+                    if let Some(text) = resp.strip_prefix("TEXT\n") {
+                        let s = if text.len() > max_chars_cfg { format!("{}\n… [truncated]", &text[..max_chars_cfg]) } else { text.to_string() };
+                        let _ = txp_outer.send((my, PreviewMsg::Text(s)));
+                    } else if let Some(html) = resp.strip_prefix("HTML\n") {
+                        // Show raw HTML text for now (avoid WebKit by default)
+                        let s = if html.len() > max_chars_cfg { format!("{}\n… [truncated]", &html[..max_chars_cfg]) } else { html.to_string() };
+                        let _ = txp_outer.send((my, PreviewMsg::Html(s)));
+                    } else if let Some(rest) = resp.strip_prefix("IMAGE\n") {
+                        let mut lines = rest.lines();
+                        let mime = lines.next().unwrap_or("image/png").to_string();
+                        let b64 = lines.collect::<Vec<_>>().join("\n");
+                        match B64.decode(b64) {
+                            Ok(bytes) => { let _ = txp_outer.send((my, PreviewMsg::Image { mime, bytes })); }
+                            Err(e) => { let _ = txp_outer.send((my, PreviewMsg::Error(format!("base64: {}", e)))); }
+                        }
+                    } else {
+                        let _ = txp_outer.send((my, PreviewMsg::Error("unknown response".into())));
+                    }
+                });
+            }
+        })
+    };
+
     // Buttons actions
     {
         let list_c = list.clone();
@@ -276,14 +391,12 @@ pub fn run() -> Result<(), String> {
         let show = show_status.clone();
         btn_clear.connect_clicked(move |_| { clear_all(); refresh_c2(entry_c2.text().to_string()); show("Cleared", gtk::MessageType::Warning); });
 
-        let list_v = list.clone();
         let preview_revealer_btn = preview_revealer.clone();
-        let preview_stack_btn = preview_stack.clone();
-        let preview_text_btn = preview_text.clone();
-        let preview_image_btn = preview_image.clone();
-        let zoom_fit_btn = zoom_fit.clone();
-        let last_pix_btn = last_pix.clone();
-        btn_prev.connect_clicked(move |_| { toggle_preview(&list_v, &preview_revealer_btn, &preview_stack_btn, &preview_text_btn, &preview_image_btn, &zoom_fit_btn, &last_pix_btn); });
+        let req = request_preview.clone();
+        btn_prev.connect_clicked(move |_| {
+            preview_revealer_btn.set_reveal_child(!preview_revealer_btn.reveals_child());
+            if preview_revealer_btn.reveals_child() { (*req)(); }
+        });
 
         // Fit button: scale to fit container
         let preview_stack_fit = preview_stack.clone();
@@ -319,11 +432,7 @@ pub fn run() -> Result<(), String> {
     // Update preview when selection changes (if visible)
     {
         let preview_revealer_c = preview_revealer.clone();
-        let preview_stack_c = preview_stack.clone();
-        let preview_text_c = preview_text.clone();
-        let preview_image_c = preview_image.clone();
-        let zoom_fit_c = zoom_fit.clone();
-        let last_pix_c = last_pix.clone();
+        let req = request_preview.clone();
         list.connect_row_selected(move |lb, row_opt| {
             // Update selected style on cards
             for child in lb.children() {
@@ -338,14 +447,14 @@ pub fn run() -> Result<(), String> {
                     if let Ok(card) = w.downcast::<gtk::EventBox>() { card.style_context().add_class("selected-card"); }
                 }
             }
-            if preview_revealer_c.reveals_child() { update_preview(lb, &preview_stack_c, &preview_text_c, &preview_image_c, &zoom_fit_c, &last_pix_c); }
+            if preview_revealer_c.reveals_child() { (*req)(); }
         });
     }
 
     // Theme toggle button
     {
         let provider_c = provider.clone();
-        let dark_state = Rc::new(RefCell::new(true));
+        let dark_state = Rc::new(RefCell::new(ui_cfg.dark));
         let dark_ref = dark_state.clone();
         btn_theme.connect_clicked(move |_| {
             let new_dark = !*dark_ref.borrow();
@@ -360,7 +469,8 @@ pub fn run() -> Result<(), String> {
         list.connect_row_activated(move |_, row| {
             let name = row.widget_name();
             if let Some(id_str) = name.strip_prefix("id:") {
-                if let Ok(id) = id_str.parse::<u64>() {
+                let id_part = id_str.split('|').next().unwrap_or(id_str);
+                if let Ok(id) = id_part.parse::<u64>() {
                     let _ = send(&format!("PASTE {}", id));
                     win.close();
                 }
@@ -373,11 +483,8 @@ pub fn run() -> Result<(), String> {
         let entry_c = entry.clone();
         let refresh_c = refresh.clone();
         let preview_revealer_menu = preview_revealer.clone();
-        let preview_stack_m = preview_stack.clone();
-        let preview_text_m = preview_text.clone();
-        let preview_image_m = preview_image.clone();
-        let zoom_fit_menu_src = zoom_fit.clone();
-        let last_pix_menu_src = last_pix.clone();
+        // removed unused clones for menu preview
+        let req_menu = request_preview.clone();
         list.connect_button_press_event(move |lb, ev: &EventButton| {
             if ev.button() == 3 { // right click
                 let (_x, y) = ev.position();
@@ -387,23 +494,7 @@ pub fn run() -> Result<(), String> {
                     let menu = gtk::Menu::new();
                     let _id_opt = current_selected_id(lb);
                     let mut currently_pinned = false;
-                    if let Some(r) = lb.selected_row() {
-                        if let Some(w) = r.child() {
-                            if let Ok(hbox_or_card) = w.downcast::<gtk::EventBox>() {
-                                if let Some(inner) = hbox_or_card.child() {
-                                    if let Ok(hbox) = inner.downcast::<gtk::Box>() {
-                                        let ch = hbox.children();
-                                        if ch.len() >= 2 {
-                                            if let Ok(label) = ch[1].clone().downcast::<gtk::Label>() {
-                                                let txt = label.text();
-                                                currently_pinned = txt.as_str().starts_with("★ ");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    if let Some(r) = lb.selected_row() { let name = r.widget_name(); currently_pinned = name.contains("|p:1"); }
                     let mi_copy = gtk::MenuItem::with_label("Copy");
                     let mi_pin = gtk::MenuItem::with_label(if currently_pinned { "Unpin" } else { "Pin" });
                     let mi_del = gtk::MenuItem::with_label("Delete");
@@ -431,14 +522,12 @@ pub fn run() -> Result<(), String> {
                     let show = show_status.clone();
                     mi_del.connect_activate(move |_| { delete_selected(&lb_c3); refresh_c3(entry_c3.text().to_string()); show("Deleted", gtk::MessageType::Other); });
 
-                    let lb_c4 = lb.clone();
                     let prev_rev4 = preview_revealer_menu.clone();
-                    let stack4 = preview_stack_m.clone();
-                    let text4 = preview_text_m.clone();
-                    let img4 = preview_image_m.clone();
-                    let zoom4 = zoom_fit_menu_src.clone();
-                    let last4 = last_pix_menu_src.clone();
-                    mi_prev.connect_activate(move |_| { toggle_preview(&lb_c4, &prev_rev4, &stack4, &text4, &img4, &zoom4, &last4); });
+                    let req_call = req_menu.clone();
+                    mi_prev.connect_activate(move |_| {
+                        prev_rev4.set_reveal_child(!prev_rev4.reveals_child());
+                        if prev_rev4.reveals_child() { (*req_call)(); }
+                    });
 
                     // Popup
                     menu.popup_easy(ev.button(), ev.time());
@@ -453,23 +542,20 @@ pub fn run() -> Result<(), String> {
         let list_nav = list.clone();
         let win = window.clone();
         let preview_revealer_key = preview_revealer.clone();
-        let preview_stack_k = preview_stack.clone();
-        let preview_text_k = preview_text.clone();
-        let preview_image_k = preview_image.clone();
-        let zoom_fit_k = zoom_fit.clone();
-        let last_pix_k = last_pix.clone();
+        // removed unused preview clones
         let refresh_cb = refresh.clone();
         let entry_c = entry.clone();
+        let req = request_preview.clone();
         entry.connect_key_press_event(move |_, ev| {
             use gtk::gdk::keys::constants as kc;
             let key = ev.keyval();
             match key {
-                k if k == kc::Up => { move_selection(&list_nav, -1); if preview_revealer_key.reveals_child() { update_preview(&list_nav, &preview_stack_k, &preview_text_k, &preview_image_k, &zoom_fit_k, &last_pix_k); } Inhibit(true) }
-                k if k == kc::Down => { move_selection(&list_nav, 1); if preview_revealer_key.reveals_child() { update_preview(&list_nav, &preview_stack_k, &preview_text_k, &preview_image_k, &zoom_fit_k, &last_pix_k); } Inhibit(true) }
+                k if k == kc::Up => { move_selection(&list_nav, -1); if preview_revealer_key.reveals_child() { (*req)(); } Inhibit(true) }
+                k if k == kc::Down => { move_selection(&list_nav, 1); if preview_revealer_key.reveals_child() { (*req)(); } Inhibit(true) }
                 k if k == kc::Return => { activate_selected(&list_nav, &win); Inhibit(true) }
                 k if k == kc::KP_Enter => { activate_selected(&list_nav, &win); Inhibit(true) }
                 // Toggle preview with Space
-                k if k == kc::space => { toggle_preview(&list_nav, &preview_revealer_key, &preview_stack_k, &preview_text_k, &preview_image_k, &zoom_fit_k, &last_pix_k); Inhibit(true) }
+                k if k == kc::space => { preview_revealer_key.set_reveal_child(!preview_revealer_key.reveals_child()); if preview_revealer_key.reveals_child() { (*req)(); } Inhibit(true) }
                 // Pin/unpin with 'p'
                 k if k == kc::p => { pin_toggle(&list_nav); refresh_cb(entry_c.text().to_string()); Inhibit(true) }
                 // Delete selected
@@ -482,22 +568,19 @@ pub fn run() -> Result<(), String> {
 
         let list_nav2 = list.clone();
         let preview_revealer_win = preview_revealer.clone();
-        let preview_stack_w = preview_stack.clone();
-        let preview_text_w = preview_text.clone();
-        let preview_image_w = preview_image.clone();
-        let zoom_fit_w = zoom_fit.clone();
-        let last_pix_w = last_pix.clone();
+        // removed unused preview clones
         let refresh_cb = refresh.clone();
         let entry_w = entry.clone();
+        let req = request_preview.clone();
         window.connect_key_press_event(move |w, ev| {
             use gtk::gdk::keys::constants as kc;
             let key = ev.keyval();
             match key {
                 k if k == kc::Escape => { w.close(); Inhibit(true) }
-                k if k == kc::Up => { move_selection(&list_nav2, -1); if preview_revealer_win.reveals_child() { update_preview(&list_nav2, &preview_stack_w, &preview_text_w, &preview_image_w, &zoom_fit_w, &last_pix_w); } Inhibit(true) }
-                k if k == kc::Down => { move_selection(&list_nav2, 1); if preview_revealer_win.reveals_child() { update_preview(&list_nav2, &preview_stack_w, &preview_text_w, &preview_image_w, &zoom_fit_w, &last_pix_w); } Inhibit(true) }
+                k if k == kc::Up => { move_selection(&list_nav2, -1); if preview_revealer_win.reveals_child() { (*req)(); } Inhibit(true) }
+                k if k == kc::Down => { move_selection(&list_nav2, 1); if preview_revealer_win.reveals_child() { (*req)(); } Inhibit(true) }
                 k if k == kc::Return || k == kc::KP_Enter => { activate_selected(&list_nav2, w); Inhibit(true) }
-                k if k == kc::space => { toggle_preview(&list_nav2, &preview_revealer_win, &preview_stack_w, &preview_text_w, &preview_image_w, &zoom_fit_w, &last_pix_w); Inhibit(true) }
+                k if k == kc::space => { preview_revealer_win.set_reveal_child(!preview_revealer_win.reveals_child()); if preview_revealer_win.reveals_child() { (*req)(); } Inhibit(true) }
                 k if k == kc::p => { pin_toggle(&list_nav2); refresh_cb(entry_w.text().to_string()); Inhibit(true) }
                 k if k == kc::Delete => { delete_selected(&list_nav2); refresh_cb(entry_w.text().to_string()); Inhibit(true) }
                 k if k == kc::l && ev.state().contains(ModifierType::CONTROL_MASK) => { clear_all(); refresh_cb(entry_w.text().to_string()); Inhibit(true) }
@@ -529,7 +612,8 @@ fn activate_selected(list: &gtk::ListBox, win: &gtk::Window) {
     if let Some(sel) = list.selected_row() {
         let name = sel.widget_name();
         if let Some(id_str) = name.strip_prefix("id:") {
-            if let Ok(id) = id_str.parse::<u64>() {
+            let id_part = id_str.split('|').next().unwrap_or(id_str);
+            if let Ok(id) = id_part.parse::<u64>() {
                 let _ = send(&format!("PASTE {}", id));
                 win.close();
             }
@@ -541,23 +625,21 @@ fn activate_selected(list: &gtk::ListBox, win: &gtk::Window) {
 fn current_selected_id(list: &gtk::ListBox) -> Option<u64> {
     list.selected_row().and_then(|sel| {
         let name = sel.widget_name();
-        name.strip_prefix("id:").and_then(|s| s.parse::<u64>().ok())
+        name.strip_prefix("id:")
+            .and_then(|s| s.split('|').next())
+            .and_then(|s| s.parse::<u64>().ok())
     })
-}
-
-#[cfg(feature = "gtk-ui")]
-fn toggle_preview(list: &gtk::ListBox, revealer: &gtk::Revealer, stack: &gtk::Stack, view: &gtk::TextView, image: &gtk::Image, zoom_fit: &Rc<RefCell<bool>>, last_pix: &Rc<RefCell<Option<Pixbuf>>>) {
-    revealer.set_reveal_child(!revealer.reveals_child());
-    if !revealer.reveals_child() { return; }
-    update_preview(list, stack, view, image, zoom_fit, last_pix);
 }
 
 #[cfg(feature = "gtk-ui")]
 fn pin_toggle(list: &gtk::ListBox) {
     if let Some(id) = current_selected_id(list) {
-        // naive toggle: try pin then unpin if already pinned (we need to know state; fetch list row label)
-        // Here we send a pin=1 first; UI will refresh on next keypress by user. For robustness, fetch name
-        let _ = send(&format!("PIN {} 1", id));
+        if let Some(sel) = list.selected_row() {
+            let name = sel.widget_name();
+            let cur = name.contains("|p:1");
+            let newv = if cur { 0 } else { 1 };
+            let _ = send(&format!("PIN {} {}", id, newv));
+        }
     }
 }
 
@@ -571,42 +653,7 @@ fn clear_all() {
     let _ = send("CLEAR");
 }
 
-#[cfg(feature = "gtk-ui")]
-fn update_preview(list: &gtk::ListBox, stack: &gtk::Stack, view: &gtk::TextView, image: &gtk::Image, zoom_fit: &Rc<RefCell<bool>>, last_pix: &Rc<RefCell<Option<Pixbuf>>>) {
-    if let Some(id) = current_selected_id(list) {
-        if let Ok(resp) = send(&format!("GET {}", id)) {
-            if let Some(text) = resp.strip_prefix("TEXT\n") {
-                if let Some(buf) = view.buffer() { buf.set_text(text); }
-                stack.set_visible_child_name("text");
-            } else if let Some(html) = resp.strip_prefix("HTML\n") {
-                if let Some(buf) = view.buffer() { buf.set_text(html); }
-                stack.set_visible_child_name("text");
-            } else if let Some(rest) = resp.strip_prefix("IMAGE\n") {
-                let mut lines = rest.lines();
-                let _mime = lines.next().unwrap_or("image/png");
-                let b64 = lines.collect::<Vec<_>>().join("\n");
-                if let Ok(bytes) = B64.decode(b64) {
-                    let loader = PixbufLoader::new();
-                    let _ = loader.write(&bytes);
-                    let _ = loader.close();
-                    if let Some(pix) = loader.pixbuf() {
-                        *last_pix.borrow_mut() = Some(pix.clone());
-                        // Fit into available width/height
-                        let alloc = stack.allocation();
-                        let max_w = (alloc.width - 24).max(200);
-                        let max_h = 420; // reasonable height bound
-                        let scaled = if *zoom_fit.borrow() { scale_pixbuf_fit(&pix, max_w, max_h) } else { pix.clone() };
-                        image.set_from_pixbuf(Some(&scaled));
-                        stack.set_visible_child_name("image");
-                        return;
-                    }
-                }
-                if let Some(buf) = view.buffer() { buf.set_text("[image preview unavailable]"); }
-                stack.set_visible_child_name("text");
-            }
-        }
-    }
-}
+// update_preview now handled asynchronously via request_preview closure above
 
 #[cfg(feature = "gtk-ui")]
 fn scale_pixbuf_fit(pix: &gdk_pixbuf::Pixbuf, max_w: i32, max_h: i32) -> gdk_pixbuf::Pixbuf {

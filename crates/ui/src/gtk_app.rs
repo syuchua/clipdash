@@ -3,7 +3,7 @@ use base64::Engine as _;
 use gdk::{EventButton, Screen};
 use gdk_pixbuf::{Pixbuf, PixbufLoader};
 #[cfg(feature = "gtk-ui")]
-use glib::{Cast, ObjectExt};
+use glib::{clone, Cast, ObjectExt};
 #[cfg(feature = "gtk-ui")]
 use gtk::gdk::ModifierType;
 #[cfg(feature = "gtk-ui")]
@@ -55,6 +55,12 @@ struct UiConfig {
     preview_min_height: i32,
     acrylic: AcrylicMode,
     blur_strength: f32,
+    open_preview_by_default: bool,
+    remember_window: bool,
+    last_window_w: i32,
+    last_window_h: i32,
+    remember_pane: bool,
+    last_pane_pos: i32,
 }
 
 fn load_ui_config() -> UiConfig {
@@ -67,6 +73,12 @@ fn load_ui_config() -> UiConfig {
         preview_min_height: 180,
         acrylic: AcrylicMode::Fake,
         blur_strength: 0.4,
+        open_preview_by_default: false,
+        remember_window: true,
+        last_window_w: 700,
+        last_window_h: 480,
+        remember_pane: true,
+        last_pane_pos: 360,
     };
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let path = std::path::Path::new(&home).join(".config/clipdash/config.toml");
@@ -113,6 +125,18 @@ fn load_ui_config() -> UiConfig {
                 if let Ok(f) = v.trim_matches('"').parse::<f32>() {
                     cfg.blur_strength = f.clamp(0.0, 1.0);
                 }
+            } else if k.eq_ignore_ascii_case("ui.open_preview_by_default") {
+                cfg.open_preview_by_default = matches!(v, "true"|"1"|"on"|"yes");
+            } else if k.eq_ignore_ascii_case("ui.remember_window") {
+                cfg.remember_window = matches!(v, "true"|"1"|"on"|"yes");
+            } else if k.eq_ignore_ascii_case("ui.window_w") {
+                if let Ok(n) = v.trim_matches('"').parse::<i32>() { cfg.last_window_w = n.max(480).min(4096); }
+            } else if k.eq_ignore_ascii_case("ui.window_h") {
+                if let Ok(n) = v.trim_matches('"').parse::<i32>() { cfg.last_window_h = n.max(320).min(4096); }
+            } else if k.eq_ignore_ascii_case("ui.remember_pane") {
+                cfg.remember_pane = matches!(v, "true"|"1"|"on"|"yes");
+            } else if k.eq_ignore_ascii_case("ui.pane_pos") {
+                if let Ok(n) = v.trim_matches('"').parse::<i32>() { cfg.last_pane_pos = n.max(80).min(2000); }
             }
         }
     }
@@ -122,17 +146,23 @@ fn load_ui_config() -> UiConfig {
 pub fn run() -> Result<(), String> {
     gtk::init().map_err(|e| format!("gtk init: {}", e))?;
     let ui_cfg = load_ui_config();
+    let ui_cfg_cell = Rc::new(RefCell::new(ui_cfg));
     // CSS provider and initial theme
     let provider = gtk::CssProvider::new();
-    apply_css_with_provider(&provider, &ui_cfg);
+    apply_css_with_provider(&provider, &ui_cfg_cell.borrow());
 
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_title("Clipdash");
-    window.set_default_size(700, 480);
+    if ui_cfg_cell.borrow().remember_window {
+        let sz = (ui_cfg_cell.borrow().last_window_w, ui_cfg_cell.borrow().last_window_h);
+        window.set_default_size(sz.0, sz.1);
+    } else {
+        window.set_default_size(700, 480);
+    }
     window.set_position(gtk::WindowPosition::Center);
     // Try semi-transparency; may be ignored on Wayland
     if std::env::var("CLIPDASH_UI_NO_OPACITY").ok().as_deref() != Some("1") {
-        window.set_opacity(ui_cfg.opacity);
+        window.set_opacity(ui_cfg_cell.borrow().opacity);
     }
 
     // Xorg 下尝试启用 RGBA 透明背景（每像素 alpha）
@@ -167,24 +197,34 @@ pub fn run() -> Result<(), String> {
     area.add(&info_label);
     let entry = gtk::SearchEntry::new();
     entry.set_placeholder_text(Some("Search..."));
-    // Toolbar with action buttons
-    let toolbar = gtk::Box::new(Orientation::Horizontal, 6);
-    let btn_copy = gtk::Button::with_label("Copy");
-    let btn_pin = gtk::Button::with_label("Pin/Unpin");
-    let btn_del = gtk::Button::with_label("Delete");
-    let btn_clear = gtk::Button::with_label("Clear");
-    let btn_prev = gtk::Button::with_label("Preview");
-    let btn_theme = gtk::Button::with_label("Theme");
-    let btn_fit = gtk::Button::with_label("Fit");
-    let btn_actual = gtk::Button::with_label("100%");
-    toolbar.pack_start(&btn_copy, false, false, 0);
-    toolbar.pack_start(&btn_pin, false, false, 0);
-    toolbar.pack_start(&btn_del, false, false, 0);
-    toolbar.pack_start(&btn_clear, false, false, 0);
-    toolbar.pack_start(&btn_prev, false, false, 0);
-    toolbar.pack_start(&btn_fit, false, false, 0);
-    toolbar.pack_start(&btn_actual, false, false, 0);
-    toolbar.pack_start(&btn_theme, false, false, 0);
+    // Menubar (Actions, View, Preferences)
+    let menubar = gtk::MenuBar::new();
+    let m_actions = gtk::MenuItem::with_label("Actions");
+    let m_view = gtk::MenuItem::with_label("View");
+    let m_prefs = gtk::MenuItem::with_label("Preferences");
+    let menu_actions = gtk::Menu::new();
+    let mi_copy = gtk::MenuItem::with_label("Copy");
+    let mi_pin = gtk::MenuItem::with_label("Pin/Unpin");
+    let mi_del = gtk::MenuItem::with_label("Delete");
+    let mi_clear = gtk::MenuItem::with_label("Clear");
+    menu_actions.append(&mi_copy);
+    menu_actions.append(&mi_pin);
+    menu_actions.append(&mi_del);
+    menu_actions.append(&mi_clear);
+    m_actions.set_submenu(Some(&menu_actions));
+    let menu_view = gtk::Menu::new();
+    let mi_preview = gtk::CheckMenuItem::with_label("Preview");
+    let mi_fit = gtk::MenuItem::with_label("Fit");
+    let mi_actual = gtk::MenuItem::with_label("100%");
+    let mi_theme = gtk::CheckMenuItem::with_label("Dark Theme");
+    menu_view.append(&mi_preview);
+    menu_view.append(&mi_fit);
+    menu_view.append(&mi_actual);
+    menu_view.append(&mi_theme);
+    m_view.set_submenu(Some(&menu_view));
+    menubar.append(&m_actions);
+    menubar.append(&m_view);
+    menubar.append(&m_prefs);
 
     let scroller = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
     let list = gtk::ListBox::new();
@@ -238,9 +278,11 @@ pub fn run() -> Result<(), String> {
     let (txp, rxp) = glib::MainContext::channel::<(u64, PreviewMsg)>(glib::PRIORITY_DEFAULT);
     let preview_seq = Arc::new(AtomicU64::new(0));
 
+    // Initialize View→Preview state from config
+    if ui_cfg_cell.borrow().open_preview_by_default { mi_preview.set_active(true); }
+    vbox.pack_start(&menubar, false, false, 0);
     vbox.pack_start(&entry, false, false, 0);
     vbox.pack_start(&infobar, false, false, 0);
-    vbox.pack_start(&toolbar, false, false, 0);
     // Stack for list/empty placeholder
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::Crossfade);
@@ -258,10 +300,94 @@ pub fn run() -> Result<(), String> {
     pane.add1(&stack);
     pane.add2(&preview_revealer);
     // 预览区最小高度，初始高度
-    preview_frame.set_size_request(-1, ui_cfg.preview_min_height);
-    pane.set_position(ui_cfg.preview_height);
+    preview_frame.set_size_request(-1, ui_cfg_cell.borrow().preview_min_height);
+    if ui_cfg_cell.borrow().remember_pane && ui_cfg_cell.borrow().last_pane_pos > 0 {
+        pane.set_position(ui_cfg_cell.borrow().last_pane_pos);
+    } else {
+        pane.set_position(ui_cfg_cell.borrow().preview_height);
+    }
     vbox.pack_start(&pane, true, true, 0);
     window.add(&vbox);
+
+    // Preferences dialog binding (after pane/frame constructed)
+    {
+        let prefs_action_window = window.clone();
+        let prefs_action_provider = provider.clone();
+        let prefs_action_pane = pane.clone();
+        let prefs_action_preview_frame = preview_frame.clone();
+        let prefs_cfg = ui_cfg_cell.clone();
+        m_prefs.connect_activate(move |_| {
+            open_preferences_dialog(
+                &prefs_action_window,
+                &prefs_action_provider,
+                &prefs_action_pane,
+                &prefs_action_preview_frame,
+                &prefs_cfg,
+            );
+        });
+    }
+
+    // Helper: adjust window height when toggling preview (non-additive)
+    let initial_base = if ui_cfg_cell.borrow().remember_window {
+        let mut b = ui_cfg_cell.borrow().last_window_h;
+        if ui_cfg_cell.borrow().open_preview_by_default {
+            b = (b - ui_cfg_cell.borrow().preview_height).max(420);
+        }
+        b
+    } else { 480 };
+    let base_h = Rc::new(RefCell::new(initial_base));
+    let adjust_on_toggle = {
+        let window = window.clone();
+        let pane = pane.clone();
+        let cfg = ui_cfg_cell.clone();
+        let base_h = base_h.clone();
+        move |revealed: bool| {
+            let (cur_w, cur_h) = (window.allocation().width, window.allocation().height);
+            if revealed {
+                let base = *base_h.borrow();
+                let target = base + cfg.borrow().preview_height.max(cfg.borrow().preview_min_height);
+                let mut new_h = target;
+                if let Some(screen) = Screen::default() {
+                    let (_sw, sh) = (screen.width(), screen.height());
+                    let cap = (sh as f64 * 0.9) as i32;
+                    if new_h > cap { new_h = cap; }
+                }
+                window.resize(cur_w.max(700), new_h.max(480));
+                pane.set_position(cfg.borrow().preview_height);
+            } else {
+                let sub = cfg.borrow().preview_height;
+                let new_base = (cur_h - sub).max(420);
+                *base_h.borrow_mut() = new_base;
+                window.resize(cur_w, new_base);
+            }
+        }
+    };
+
+    // Save window/pane positions on close
+    {
+        let cfg_save = ui_cfg_cell.clone();
+        let pane_ref = pane.clone();
+        window.connect_delete_event(move |w, _| {
+            let alloc = w.allocation();
+            let mut cfg = cfg_save.borrow_mut();
+            if cfg.remember_window {
+                cfg.last_window_w = alloc.width;
+                cfg.last_window_h = alloc.height;
+            }
+            if cfg.remember_pane {
+                cfg.last_pane_pos = pane_ref.position();
+            }
+            let _ = save_ui_config(&cfg);
+            Inhibit(false)
+        });
+    }
+
+    // If configured, open preview by default on startup
+    if ui_cfg_cell.borrow().open_preview_by_default {
+        preview_revealer.set_reveal_child(true);
+        // window expand
+        (adjust_on_toggle.clone())(true);
+    }
 
     // Channel to update list from worker thread
     let (tx, rx) = glib::MainContext::channel::<Vec<(u64, String, bool, String, String)>>(
@@ -549,11 +675,13 @@ pub fn run() -> Result<(), String> {
         let list_rp = list.clone();
         let txp = txp.clone();
         let seq = preview_seq.clone();
-        let max_chars_cfg = ui_cfg.max_preview_chars;
+        let max_chars_cfg = ui_cfg_cell.borrow().max_preview_chars;
+        let ui_cfg_for_req = ui_cfg_cell.clone();
         std::rc::Rc::new(move || {
             if let Some(id) = current_selected_id(&list_rp) {
                 let my = seq.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                 let txp_outer = txp.clone();
+                let img_max = ui_cfg_for_req.borrow().max_image_preview_bytes;
                 std::thread::spawn(move || {
                     let resp = match send(&format!("GET {}", id)) {
                         Ok(s) => s,
@@ -584,7 +712,7 @@ pub fn run() -> Result<(), String> {
                         match B64.decode(b64) {
                             Ok(bytes) => {
                                 let sz = bytes.len();
-                                if sz > ui_cfg.max_image_preview_bytes {
+                                if sz > img_max {
                                     let _ = txp_outer
                                         .send((my, PreviewMsg::ImageTooLarge { mime, size: sz }));
                                 } else {
@@ -604,62 +732,60 @@ pub fn run() -> Result<(), String> {
         })
     };
 
-    // Buttons actions
+    // Menu actions and handlers
     {
-        let list_c = list.clone();
-        let show = show_status.clone();
-        btn_copy.connect_clicked(move |_| {
-            if let Some(id) = current_selected_id(&list_c) {
+
+        // Menu actions
+        let lb_copy = list.clone();
+        let show_copy = show_status.clone();
+        mi_copy.connect_activate(move |_| {
+            if let Some(id) = current_selected_id(&lb_copy) {
                 let _ = send(&format!("PASTE {}", id));
-                show("Copied", gtk::MessageType::Info);
+                show_copy("Copied", gtk::MessageType::Info);
             }
         });
-
-        let list_p = list.clone();
-        let entry_p = entry.clone();
-        let refresh_p = refresh.clone();
-        let show = show_status.clone();
-        btn_pin.connect_clicked(move |_| {
-            pin_toggle(&list_p);
-            refresh_p(entry_p.text().to_string());
-            show("Toggled pin", gtk::MessageType::Other);
+        let lb_pin = list.clone();
+        let entry_pin = entry.clone();
+        let refresh_pin = refresh.clone();
+        let show_pin = show_status.clone();
+        mi_pin.connect_activate(move |_| {
+            pin_toggle(&lb_pin);
+            refresh_pin(entry_pin.text().to_string());
+            show_pin("Toggled pin", gtk::MessageType::Other);
         });
-
-        let list_d = list.clone();
-        let entry_d = entry.clone();
-        let refresh_d = refresh.clone();
-        let show = show_status.clone();
-        btn_del.connect_clicked(move |_| {
-            delete_selected(&list_d);
-            refresh_d(entry_d.text().to_string());
-            show("Deleted", gtk::MessageType::Other);
+        let lb_del = list.clone();
+        let entry_del = entry.clone();
+        let refresh_del = refresh.clone();
+        let show_del = show_status.clone();
+        mi_del.connect_activate(move |_| {
+            delete_selected(&lb_del);
+            refresh_del(entry_del.text().to_string());
+            show_del("Deleted", gtk::MessageType::Other);
         });
-
-        let entry_c2 = entry.clone();
-        let refresh_c2 = refresh.clone();
-        let show = show_status.clone();
-        btn_clear.connect_clicked(move |_| {
+        let entry_cl = entry.clone();
+        let refresh_cl = refresh.clone();
+        let show_cl = show_status.clone();
+        mi_clear.connect_activate(move |_| {
             clear_all();
-            refresh_c2(entry_c2.text().to_string());
-            show("Cleared", gtk::MessageType::Warning);
+            refresh_cl(entry_cl.text().to_string());
+            show_cl("Cleared", gtk::MessageType::Warning);
         });
-
         let preview_revealer_btn = preview_revealer.clone();
         let req = request_preview.clone();
-        btn_prev.connect_clicked(move |_| {
-            preview_revealer_btn.set_reveal_child(!preview_revealer_btn.reveals_child());
-            if preview_revealer_btn.reveals_child() {
-                (*req)();
-            }
+        let adjust = adjust_on_toggle.clone();
+        mi_preview.connect_toggled(move |mi| {
+            let reveal = mi.is_active();
+            preview_revealer_btn.set_reveal_child(reveal);
+            adjust(reveal);
+            if reveal { (*req)(); }
         });
-
-        // Fit button: scale to fit container
+        // View menu Fit/100%
         let preview_stack_fit = preview_stack.clone();
         let image_scroller_fit = image_scroller.clone();
         let preview_image_fit = preview_image.clone();
         let zoom_fit_fit = zoom_fit.clone();
         let last_pix_fit = last_pix.clone();
-        btn_fit.connect_clicked(move |_| {
+        mi_fit.connect_activate(move |_| {
             *zoom_fit_fit.borrow_mut() = true;
             if let Some(pix) = last_pix_fit.borrow().clone() {
                 let alloc = image_scroller_fit.allocation();
@@ -670,19 +796,25 @@ pub fn run() -> Result<(), String> {
                 preview_stack_fit.set_visible_child_name("image");
             }
         });
-
-        // 100% button: show original size
         let preview_stack_100 = preview_stack.clone();
         let preview_image_100 = preview_image.clone();
         let zoom_fit_100 = zoom_fit.clone();
         let last_pix_100 = last_pix.clone();
-        btn_actual.connect_clicked(move |_| {
+        mi_actual.connect_activate(move |_| {
             *zoom_fit_100.borrow_mut() = false;
             if let Some(pix) = last_pix_100.borrow().clone() {
                 preview_image_100.set_from_pixbuf(Some(&pix));
                 preview_stack_100.set_visible_child_name("image");
             }
         });
+        // Theme toggle
+        let provider_c = provider.clone();
+        let cfg_c = ui_cfg_cell.clone();
+        mi_theme.connect_toggled(move |mi| {
+            cfg_c.borrow_mut().dark = mi.is_active();
+            apply_css_with_provider(&provider_c, &cfg_c.borrow());
+        });
+
     }
 
     // Update preview when selection changes (if visible)
@@ -715,7 +847,7 @@ pub fn run() -> Result<(), String> {
 
     // 当预览容器大小变化时，若处于“适应窗口”模式则重新缩放，避免拉伸失真
     {
-        let image_scroller_rsz = image_scroller.clone();
+        let _image_scroller_rsz = image_scroller.clone();
         let preview_image_rsz = preview_image.clone();
         let zoom_fit_rsz = zoom_fit.clone();
         let last_pix_rsz = last_pix.clone();
@@ -732,30 +864,7 @@ pub fn run() -> Result<(), String> {
         });
     }
 
-    // Theme toggle button
-    {
-        let provider_c = provider.clone();
-        let dark_state = Rc::new(RefCell::new(ui_cfg.dark));
-        let acrylic_mode = ui_cfg.acrylic;
-        let blur_strength = ui_cfg.blur_strength;
-        let dark_ref = dark_state.clone();
-        btn_theme.connect_clicked(move |_| {
-            let new_dark = !*dark_ref.borrow();
-            *dark_ref.borrow_mut() = new_dark;
-            // 重建 CSS，保持其他参数不变
-            let tmp_cfg = UiConfig {
-                dark: new_dark,
-                opacity: 1.0,
-                max_preview_chars: 0,
-                max_image_preview_bytes: 0,
-                preview_height: 0,
-                preview_min_height: 0,
-                acrylic: acrylic_mode,
-                blur_strength,
-            };
-            apply_css_with_provider(&provider_c, &tmp_cfg);
-        });
-    }
+    // Theme toggle button removed; handled via menu
 
     // Activate row -> copy (PASTE) and close
     {
@@ -774,6 +883,7 @@ pub fn run() -> Result<(), String> {
 
     // Context menu on right-click
     {
+        let adjust_for_ctx = adjust_on_toggle.clone();
         let entry_c = entry.clone();
         let refresh_c = refresh.clone();
         let preview_revealer_menu = preview_revealer.clone();
@@ -836,11 +946,12 @@ pub fn run() -> Result<(), String> {
 
                     let prev_rev4 = preview_revealer_menu.clone();
                     let req_call = req_menu.clone();
+                    let adjust_call = adjust_for_ctx.clone();
                     mi_prev.connect_activate(move |_| {
-                        prev_rev4.set_reveal_child(!prev_rev4.reveals_child());
-                        if prev_rev4.reveals_child() {
-                            (*req_call)();
-                        }
+                        let newv = !prev_rev4.reveals_child();
+                        prev_rev4.set_reveal_child(newv);
+                        adjust_call(newv);
+                        if newv { (*req_call)(); }
                     });
 
                     // Popup
@@ -858,6 +969,7 @@ pub fn run() -> Result<(), String> {
         let list_nav = list.clone();
         let win = window.clone();
         let preview_revealer_key = preview_revealer.clone();
+        let adjust = adjust_on_toggle.clone();
         // removed unused preview clones
         let refresh_cb = refresh.clone();
         let entry_c = entry.clone();
@@ -889,13 +1001,7 @@ pub fn run() -> Result<(), String> {
                     Inhibit(true)
                 }
                 // Toggle preview with Space
-                k if k == kc::space => {
-                    preview_revealer_key.set_reveal_child(!preview_revealer_key.reveals_child());
-                    if preview_revealer_key.reveals_child() {
-                        (*req)();
-                    }
-                    Inhibit(true)
-                }
+                k if k == kc::space => { let newv = !preview_revealer_key.reveals_child(); preview_revealer_key.set_reveal_child(newv); adjust(newv); if newv { (*req)(); } Inhibit(true) }
                 // Pin/unpin with 'p'
                 k if k == kc::p => {
                     pin_toggle(&list_nav);
@@ -920,6 +1026,7 @@ pub fn run() -> Result<(), String> {
 
         let list_nav2 = list.clone();
         let preview_revealer_win = preview_revealer.clone();
+        let adjust2 = adjust_on_toggle.clone();
         // removed unused preview clones
         let refresh_cb = refresh.clone();
         let entry_w = entry.clone();
@@ -950,13 +1057,7 @@ pub fn run() -> Result<(), String> {
                     activate_selected(&list_nav2, w);
                     Inhibit(true)
                 }
-                k if k == kc::space => {
-                    preview_revealer_win.set_reveal_child(!preview_revealer_win.reveals_child());
-                    if preview_revealer_win.reveals_child() {
-                        (*req)();
-                    }
-                    Inhibit(true)
-                }
+                k if k == kc::space => { let newv = !preview_revealer_win.reveals_child(); preview_revealer_win.set_reveal_child(newv); adjust2(newv); if newv { (*req)(); } Inhibit(true) }
                 k if k == kc::p => {
                     pin_toggle(&list_nav2);
                     refresh_cb(entry_w.text().to_string());
@@ -1237,6 +1338,137 @@ fn set_textview_with_markdown(view: &gtk::TextView, input: &str) {
             buf.insert(&mut it, "\n");
         }
     }
+}
+
+#[cfg(feature = "gtk-ui")]
+fn open_preferences_dialog(
+    parent: &gtk::Window,
+    provider: &gtk::CssProvider,
+    pane: &gtk::Paned,
+    preview_frame: &gtk::Frame,
+    cfg_cell: &Rc<RefCell<UiConfig>>,
+) {
+    let dialog = gtk::Dialog::with_buttons(
+        Some("Preferences"),
+        Some(parent),
+        gtk::DialogFlags::MODAL,
+        &[("Cancel", gtk::ResponseType::Cancel), ("OK", gtk::ResponseType::Ok)],
+    );
+    let content = dialog.content_area();
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(6);
+    grid.set_column_spacing(8);
+
+    let dark_switch = gtk::Switch::new();
+    dark_switch.set_active(cfg_cell.borrow().dark);
+    let opacity_adj = gtk::Adjustment::new(cfg_cell.borrow().opacity, 0.0, 1.0, 0.01, 0.1, 0.0);
+    let opacity_spin = gtk::SpinButton::new(Some(&opacity_adj), 0.01, 2);
+    let blur_adj = gtk::Adjustment::new(cfg_cell.borrow().blur_strength as f64, 0.0, 1.0, 0.05, 0.1, 0.0);
+    let blur_spin = gtk::SpinButton::new(Some(&blur_adj), 0.05, 2);
+    let ph_adj = gtk::Adjustment::new(cfg_cell.borrow().preview_height as f64, 100.0, 2000.0, 10.0, 50.0, 0.0);
+    let ph_spin = gtk::SpinButton::new(Some(&ph_adj), 10.0, 0);
+    let pmin_adj = gtk::Adjustment::new(cfg_cell.borrow().preview_min_height as f64, 80.0, 1000.0, 10.0, 50.0, 0.0);
+    let pmin_spin = gtk::SpinButton::new(Some(&pmin_adj), 10.0, 0);
+
+    // Advanced toggles
+    let open_preview_chk = gtk::CheckButton::with_label("Open preview by default");
+    open_preview_chk.set_active(cfg_cell.borrow().open_preview_by_default);
+    let remember_win_chk = gtk::CheckButton::with_label("Remember window size");
+    remember_win_chk.set_active(cfg_cell.borrow().remember_window);
+    let win_w_adj = gtk::Adjustment::new(cfg_cell.borrow().last_window_w as f64, 480.0, 4096.0, 10.0, 50.0, 0.0);
+    let win_w_spin = gtk::SpinButton::new(Some(&win_w_adj), 10.0, 0);
+    let win_h_adj = gtk::Adjustment::new(cfg_cell.borrow().last_window_h as f64, 320.0, 4096.0, 10.0, 50.0, 0.0);
+    let win_h_spin = gtk::SpinButton::new(Some(&win_h_adj), 10.0, 0);
+    win_w_spin.set_sensitive(cfg_cell.borrow().remember_window);
+    win_h_spin.set_sensitive(cfg_cell.borrow().remember_window);
+    let remember_pane_chk = gtk::CheckButton::with_label("Remember preview pane");
+    remember_pane_chk.set_active(cfg_cell.borrow().remember_pane);
+    let pane_pos_adj = gtk::Adjustment::new(cfg_cell.borrow().last_pane_pos as f64, 80.0, 2000.0, 10.0, 50.0, 0.0);
+    let pane_pos_spin = gtk::SpinButton::new(Some(&pane_pos_adj), 10.0, 0);
+    pane_pos_spin.set_sensitive(cfg_cell.borrow().remember_pane);
+
+    grid.attach(&gtk::Label::new(Some("Dark theme")), 0, 0, 1, 1);
+    grid.attach(&dark_switch, 1, 0, 1, 1);
+    grid.attach(&gtk::Label::new(Some("Opacity")), 0, 1, 1, 1);
+    grid.attach(&opacity_spin, 1, 1, 1, 1);
+    grid.attach(&gtk::Label::new(Some("Acrylic strength")), 0, 2, 1, 1);
+    grid.attach(&blur_spin, 1, 2, 1, 1);
+    grid.attach(&gtk::Label::new(Some("Preview height")), 0, 3, 1, 1);
+    grid.attach(&ph_spin, 1, 3, 1, 1);
+    grid.attach(&gtk::Label::new(Some("Preview min height")), 0, 4, 1, 1);
+    grid.attach(&pmin_spin, 1, 4, 1, 1);
+    grid.attach(&open_preview_chk, 0, 5, 2, 1);
+    grid.attach(&remember_win_chk, 0, 6, 2, 1);
+    grid.attach(&gtk::Label::new(Some("Window width")), 0, 7, 1, 1);
+    grid.attach(&win_w_spin, 1, 7, 1, 1);
+    grid.attach(&gtk::Label::new(Some("Window height")), 0, 8, 1, 1);
+    grid.attach(&win_h_spin, 1, 8, 1, 1);
+    grid.attach(&remember_pane_chk, 0, 9, 2, 1);
+    grid.attach(&gtk::Label::new(Some("Pane position")), 0, 10, 1, 1);
+    grid.attach(&pane_pos_spin, 1, 10, 1, 1);
+
+    // sensitivity toggles
+    remember_win_chk.connect_toggled(clone!(@weak win_w_spin, @weak win_h_spin => move |chk| {
+        let s = chk.is_active(); win_w_spin.set_sensitive(s); win_h_spin.set_sensitive(s);
+    }));
+    remember_pane_chk.connect_toggled(clone!(@weak pane_pos_spin => move |chk| {
+        pane_pos_spin.set_sensitive(chk.is_active());
+    }));
+
+    content.add(&grid);
+    dialog.show_all();
+    let resp = dialog.run();
+    if resp == gtk::ResponseType::Ok {
+        let mut cfg = cfg_cell.borrow_mut();
+        cfg.dark = dark_switch.is_active();
+        cfg.opacity = opacity_spin.value();
+        cfg.blur_strength = blur_spin.value() as f32;
+        cfg.preview_height = ph_spin.value() as i32;
+        cfg.preview_min_height = pmin_spin.value() as i32;
+        cfg.open_preview_by_default = open_preview_chk.is_active();
+        cfg.remember_window = remember_win_chk.is_active();
+        cfg.last_window_w = win_w_spin.value() as i32;
+        cfg.last_window_h = win_h_spin.value() as i32;
+        cfg.remember_pane = remember_pane_chk.is_active();
+        cfg.last_pane_pos = pane_pos_spin.value() as i32;
+        drop(cfg);
+        // Apply
+        apply_css_with_provider(provider, &cfg_cell.borrow());
+        preview_frame.set_size_request(-1, cfg_cell.borrow().preview_min_height);
+        pane.set_position(cfg_cell.borrow().preview_height);
+        // Persist to config
+        let _ = save_ui_config(&cfg_cell.borrow());
+    }
+    unsafe { dialog.destroy(); }
+}
+
+#[cfg(feature = "gtk-ui")]
+fn save_ui_config(cfg: &UiConfig) -> std::io::Result<()> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let path = std::path::Path::new(&home).join(".config/clipdash/config.toml");
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let _ = std::fs::create_dir_all(dir);
+    // Overwrite only UI section (simple writer)
+    let data = format!(
+        "ui.dark = {}\nui.opacity = {}\nui.acrylic = \"{}\"\nui.blur_strength = {}\nui.preview_height = {}\nui.preview_min_height = {}\nui.max_preview_chars = {}\nui.max_image_preview_bytes = {}\nui.open_preview_by_default = {}\nui.remember_window = {}\nui.window_w = {}\nui.window_h = {}\nui.remember_pane = {}\nui.pane_pos = {}\n",
+        if cfg.dark { "true" } else { "false" },
+        cfg.opacity,
+        match cfg.acrylic { AcrylicMode::Off => "off", AcrylicMode::Fake => "fake", AcrylicMode::Auto => "auto" },
+        cfg.blur_strength,
+        cfg.preview_height,
+        cfg.preview_min_height,
+        cfg.max_preview_chars,
+        cfg.max_image_preview_bytes,
+        if cfg.open_preview_by_default { "true" } else { "false" },
+        if cfg.remember_window { "true" } else { "false" },
+        cfg.last_window_w,
+        cfg.last_window_h,
+        if cfg.remember_pane { "true" } else { "false" },
+        cfg.last_pane_pos
+    );
+    // Append or replace file: write UI block only (simplified)
+    let _ = std::fs::write(&path, data);
+    Ok(())
 }
 #[cfg(feature = "gtk-ui")]
 fn sanitize_html_for_preview(input: &str) -> String {
